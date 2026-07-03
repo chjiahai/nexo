@@ -1,0 +1,71 @@
+# --- VCS ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Python build artifacts ---
+__pycache__/
+*.py[codz]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.Python
+
+# --- Virtual envs (never bake in) ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.coverage
+htmlcov/
+
+# --- Secrets (CRITICAL — never bake into image) ---
+.env
+.env.*
+*.pem
+*.key
+secrets.yaml
+secrets.toml
+
+# --- Tests, examples, dev-only ---
+tests/
+.env.example
+inbox/
+*.ipynb
+.ipynb_checkpoints/
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+.claude/
+
+# --- Data (bind-mounted at runtime, not baked in) ---
+data/
+
+# --- Docker meta (avoid recursive context) ---
+Dockerfile
+docker-compose.yml
+.dockerignore
+scripts/
+
+# --- OS noise ---
+.DS_Store
+Thumbs.db
+
+# --- Project-local runtime state ---
+state/
+runs/
+sessions/
+logs/
+*.log
+*.db
+*.sqlite*
