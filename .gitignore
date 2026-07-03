@@ -216,3 +216,67 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# Nexo project-specific
+# (agent system for document intelligence — see README)
+# ---------------------------------------------------------------------------
+
+# Secrets / credentials — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.yaml
+secrets.toml
+
+# User-uploaded & generated document data (large, sensitive, regenerable)
+# Keep the directory layout via .gitkeep, ignore all contents.
+# Sample fixtures belong under tests/fixtures/, not data/.
+data/uploads/*
+!data/uploads/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/index/*
+!data/index/.gitkeep
+
+# Vector stores & embeddings indices
+*.faiss
+*.pkl.embeddings
+chroma_db/
+.chroma/
+.qdrant/
+weaviate/
+pgvector/
+
+# Model artifacts & weights (downloaded, not source)
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.gguf
+models/
+hf_cache/
+.cache/
+
+# Local application state / runtime databases
+*.db
+*.sqlite
+*.sqlite3
+nexo.db
+state/
+runs/
+sessions/
+
+# Logs & ephemeral output
+logs/
+*.log
+*.out
+output/
+tmp/
+
+# Notebooks checkpoints (in addition to .ipynb_checkpoints above)
+*.ipynb_checkpoints

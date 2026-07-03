@@ -1,0 +1,30 @@
+[project]
+name = "nexo"
+version = "0.1.0"
+description = "Scalable open-source agent system for document intelligence."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic-ai>=2.3.0",
+    "python-dotenv>=1.0",
+    "wecom-aibot-python-sdk>=1.0.2",
+]
+
+[project.scripts]
+nexo = "nexo.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nexo"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

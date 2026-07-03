@@ -1,0 +1,31 @@
+{
+    "workbench.colorCustomizations": {
+        
+        // Terminal font
+        //"terminal.integrated.fontFamily": "JetBrains Mono",
+        //"terminal.integrated.fontSize": 14,
+        //"terminal.integrated.lineHeight": 1.2,
+        //"terminal.integrated.fontWeight": "400",
+
+        // Terminal colors
+        //"terminal.background": "#1E1E1E",
+        //"terminal.foreground": "#D4D4D4",
+        //"terminalCursor.foreground": "#00FFAA",
+        //"terminal.selectionBackground": "#264F78",
+
+        // Terminal cursor colors
+        //"terminal.integrated.cursorBlinking": true,
+        //"terminal.integrated.cursorStyle": "line",
+        //"terminal.integrated.cursorWidth": 2,
+
+        // Terminal background opacity
+        //"terminal.integrated.backgroundOpacity": 0.9
+
+    },
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+
+}
