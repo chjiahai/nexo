@@ -280,3 +280,6 @@ tmp/
 
 # Notebooks checkpoints (in addition to .ipynb_checkpoints above)
 *.ipynb_checkpoints
+
+# Inbox scratch / notebooks (local only)
+inbox/
