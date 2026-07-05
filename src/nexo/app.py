@@ -6,7 +6,7 @@ request kind has its own `handle_*` entry point; the transport layer picks
 the right one based on the message type (e.g. WeCom `msgtype`):
 
     text -> handle_text -> chat_agent (streamed)        [live]
-    file -> handle_file -> ingest pipeline (placeholder) [skeleton]
+    file -> handle_file -> documents pipeline           [live]
 
 This is the only layer that holds cross-turn state (session history, for the
 text route). It does not import any transport code.
@@ -42,14 +42,23 @@ async def handle_text(session_id: str, text: str) -> AsyncIterator[str]:
     _sessions[session_id] = result.all_messages()
 
 
-async def handle_file(session_id: str, filename: str) -> AsyncIterator[str]:
-    """Handle an uploaded file.
+async def handle_file(session_id: str, filename: str, file_data: bytes) -> AsyncIterator[str]:
+    """Handle an uploaded file: extract text, summarize, persist.
 
-    Placeholder until the documents/ (parse) + memory/ (store) pipeline is
-    built: just acknowledge receipt. Once the pipeline exists, this will run
-    `ingest_agent` on the parsed text and persist the resulting memory nodes.
+    `file_data` is the already-downloaded-and-decrypted file content (the
+    transport layer handles download + AES decryption). Streams progress chunks
+    to the transport. The documents pipeline owns the heavy lifting; we wrap it
+    so a failure still yields a friendly Chinese message and the WeCom bubble
+    always receives a finish frame.
     """
-    yield f"（文档摄取功能开发中，已收到：{filename}）"
+    from nexo.documents.pipeline import process_file  # lazy: avoid import overhead at bot startup
+    from nexo.prompts import msg
+
+    try:
+        async for chunk in process_file(file_data, filename):
+            yield chunk
+    except Exception as exc:  # noqa: BLE001 — surface a readable message to the user
+        yield msg("file_handle_failed", error=exc)
 
 
 def reset_session(session_id: str) -> None:

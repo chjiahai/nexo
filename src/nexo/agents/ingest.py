@@ -7,12 +7,12 @@ pattern: one role, one system prompt, one structured output type. Orchestration
 
 from __future__ import annotations
 
-import asyncio
-
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings
 
 from nexo.config import MODEL_NAME
+from nexo.prompts import INGEST_SYSTEM_PROMPT
 
 
 class MemoryNode(BaseModel):
@@ -37,29 +37,20 @@ class IngestResult(BaseModel):
 ingest_agent = Agent(
     model=MODEL_NAME,
     output_type=IngestResult,
-    system_prompt=(
-        "You are Nexo's ingest agent. Given raw document text, produce a "
-        "structured memory representation: a title, a short summary, top "
-        "keywords, and the document split into coherent, queryable memory "
-        "nodes. Be precise and faithful to the source — do not invent facts."
-    ),
+    system_prompt=INGEST_SYSTEM_PROMPT,
     retries=1,
     defer_model_check=True,
 )
 
+# Structured output is realized via tool calling (tool_choice), which DeepSeek's
+# thinking models reject ("Thinking mode does not support this tool_choice").
+# Disable thinking for this agent — summarization doesn't need it, and it's
+# incompatible with the forced tool call either way. chat_agent (output_type=str)
+# has no tool_choice, so thinking stays on there.
+_NO_THINK_SETTINGS = ModelSettings(extra_body={"thinking": {"type": "disabled"}})
+
 
 async def run(text: str) -> IngestResult:
     """Run the ingest agent on a document and return structured memory."""
-    result = await ingest_agent.run(text)
+    result = await ingest_agent.run(text, model_settings=_NO_THINK_SETTINGS)
     return result.output
-
-
-if __name__ == "__main__":
-    _sample = (
-        "PydanticAI is a Python agent framework that lets you build "
-        "production-grade generative AI applications. It is model-agnostic, "
-        "type-safe, and built on Pydantic. Agents are defined with a model, "
-        "system prompt, and tools, and return structured, validated output."
-    )
-    out = asyncio.run(run(_sample))
-    print(out.model_dump_json(indent=2))

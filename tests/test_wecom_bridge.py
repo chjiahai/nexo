@@ -20,15 +20,26 @@ from nexo.api import wecom
 class FakeWSClient:
     """Records reply_stream / reply_welcome calls instead of sending them."""
 
-    def __init__(self) -> None:
+    def __init__(self, downloads=None) -> None:
         self.stream_calls: list[tuple[str, str, bool]] = []
         self.welcome_calls: list[dict] = []
+        self.download_calls: list[tuple[str, str]] = []
+        # If an Exception, download_file raises it; if a list, pops next (bytes, name).
+        self.downloads = downloads if downloads is not None else []
 
     async def reply_stream(self, frame, stream_id, content, finish=False, **_):
         self.stream_calls.append((stream_id, content, finish))
 
     async def reply_welcome(self, frame, body):
         self.welcome_calls.append(body)
+
+    async def download_file(self, url, aes_key=None):
+        self.download_calls.append((url, aes_key))
+        if isinstance(self.downloads, Exception):
+            raise self.downloads
+        if not self.downloads:
+            raise AssertionError("no fake download queued")
+        return self.downloads.pop(0)
 
 
 def _text_frame(content: str, body_extra: dict | None = None) -> dict:
@@ -92,6 +103,29 @@ def test_filename_from_frame_falls_back_to_msgid():
     """No filename field -> fall back to body.msgid."""
     frame = _file_frame()  # file has only url
     assert wecom._filename_from_frame(frame) == "mid-1"
+
+
+def test_file_url_from_frame_returns_url():
+    frame = _file_frame({"file": {"filename": "report.pdf", "url": "https://x/y"}})
+    assert wecom._file_url_from_frame(frame) == "https://x/y"
+
+
+def test_file_url_from_frame_missing_is_empty():
+    """No url in the file payload -> empty string (pipeline surfaces a clear error)."""
+    frame = {"body": {"msgtype": "file", "file": {"filename": "a.pdf"}}}
+    assert wecom._file_url_from_frame(frame) == ""
+    assert wecom._file_url_from_frame({}) == ""
+
+
+def test_file_aeskey_from_frame_returns_key():
+    frame = _file_frame({"file": {"url": "https://x/y", "aeskey": "base64key=="}})
+    assert wecom._file_aeskey_from_frame(frame) == "base64key=="
+
+
+def test_file_aeskey_from_frame_missing_is_empty():
+    """No aeskey -> empty; without it the downloaded bytes stay encrypted."""
+    assert wecom._file_aeskey_from_frame(_file_frame()) == ""
+    assert wecom._file_aeskey_from_frame({}) == ""
 
 
 def test_reply_streamed_streams_and_finishes():
@@ -175,3 +209,71 @@ def test_register_handlers_wires_events():
     assert stub.listeners("message.text")
     assert stub.listeners("message.file")
     assert stub.listeners("event.enter_chat")
+
+
+def test_stream_file_downloads_and_delegates(monkeypatch):
+    """_stream_file: SDK download+decrypt yields plaintext bytes, then hands off
+    to handle_file using the SDK-provided filename over the frame hash."""
+    fake = FakeWSClient()
+    fake.downloads = [(b"plaintext-bytes", "real-name.docx")]
+
+    captured: dict = {}
+
+    async def fake_handle(session_id, filename, file_data):
+        captured.update(session_id=session_id, filename=filename, file_data=file_data)
+        yield f"ok:{filename}"
+
+    monkeypatch.setattr(wecom, "handle_file", fake_handle)
+
+    async def gen():
+        async for c in wecom._stream_file(fake, "wecom:u1", "hash.docx", "https://x/y", "k"):
+            yield c
+
+    chunks = asyncio.run(_collect(gen()))
+
+    # SDK download called with url + aes_key.
+    assert fake.download_calls == [("https://x/y", "k")]
+    # handle_file got the decrypted bytes and the SDK filename (not the hash).
+    assert captured["file_data"] == b"plaintext-bytes"
+    assert captured["filename"] == "real-name.docx"
+    assert captured["session_id"] == "wecom:u1"
+    # Progress + delegated chunk streamed out.
+    assert chunks[0] == "正在下载文件…"
+    assert chunks[-1] == "ok:real-name.docx"
+
+
+def test_stream_file_empty_url_yields_error():
+    """No download URL -> a clear user-facing message, no SDK call."""
+    fake = FakeWSClient()
+
+    async def gen():
+        async for c in wecom._stream_file(fake, "wecom:u1", "x.docx", "", "k"):
+            yield c
+
+    chunks = asyncio.run(_collect(gen()))
+    assert fake.downloads == []
+    assert "下载链接为空" in chunks[-1]
+
+
+def test_stream_file_download_failure_surfaces_error(monkeypatch):
+    """A download/decrypt error becomes a readable message, not a crash."""
+    fake = FakeWSClient(downloads=RuntimeError("bad aeskey"))
+
+    async def fail_handle(*a, **k):  # pragma: no cover — must not run
+        yield "should not reach"
+    monkeypatch.setattr(wecom, "handle_file", fail_handle)
+
+    async def gen():
+        async for c in wecom._stream_file(fake, "wecom:u1", "x.docx", "https://x/y", "k"):
+            yield c
+
+    chunks = asyncio.run(_collect(gen()))
+    assert "下载失败" in chunks[-1]
+    assert "bad aeskey" in chunks[-1]
+
+
+async def _collect(gen):
+    out: list[str] = []
+    async for c in gen:
+        out.append(c)
+    return out

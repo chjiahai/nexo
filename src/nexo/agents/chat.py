@@ -10,13 +10,11 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from nexo.config import MODEL_NAME
+from nexo.prompts import CHAT_SYSTEM_PROMPT
 
 chat_agent = Agent(
     model=MODEL_NAME,
     output_type=str,
-    system_prompt=(
-        "You are Nexo, a helpful assistant running inside an enterprise "
-        "messaging bot. Answer concisely and helpfully."
-    ),
+    system_prompt=CHAT_SYSTEM_PROMPT,
     defer_model_check=True,
 )

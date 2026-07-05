@@ -81,15 +81,30 @@ def test_reset_session_clears_history(test_model):
     assert "s5" not in app._sessions
 
 
-def test_handle_file_stub_yields_placeholder():
-    """Until the ingest pipeline exists, handle_file acknowledges the file."""
-    out = asyncio.run(_collect_file("s6", "report.pdf"))
-    assert "文档摄取功能开发中" in out
-    assert "report.pdf" in out
+def test_handle_file_surfaces_pipeline_chunks(monkeypatch):
+    """handle_file streams whatever the documents pipeline yields."""
+    async def fake_process(file_data, filename):
+        yield f"fake:{filename}:{len(file_data)}"
+
+    monkeypatch.setattr("nexo.documents.pipeline.process_file", fake_process)
+    out = asyncio.run(_collect_file("s6", "report.pdf", b"hello"))
+    assert "fake:report.pdf:5" in out
 
 
-async def _collect_file(session_id: str, filename: str) -> str:
+def test_handle_file_wraps_pipeline_errors(monkeypatch):
+    """A pipeline failure becomes a friendly Chinese message, not a crash."""
+    async def boom(file_data, filename):
+        raise RuntimeError("boom")
+        yield  # pragma: no cover — make it an async generator
+
+    monkeypatch.setattr("nexo.documents.pipeline.process_file", boom)
+    out = asyncio.run(_collect_file("s6", "report.pdf", b"hello"))
+    assert "处理失败" in out
+    assert "boom" in out
+
+
+async def _collect_file(session_id: str, filename: str, file_data: bytes) -> str:
     chunks: list[str] = []
-    async for chunk in app.handle_file(session_id, filename):
+    async for chunk in app.handle_file(session_id, filename, file_data):
         chunks.append(chunk)
     return "".join(chunks)

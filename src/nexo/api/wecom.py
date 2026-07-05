@@ -6,7 +6,7 @@ bridges it to the application layer, dispatching by WeCom message type
 (deterministic routing — no router agent):
 
     message.text ──> app.handle_text  ──> chat_agent (streamed)
-    message.file ──> app.handle_file  ──> ingest pipeline (placeholder)
+    message.file ──> app.handle_file  ──> documents pipeline (download+parse+summarize)
 
 Each handler streams the reply back via `reply_stream` (finish=False per
 chunk, finish=True at end). This is a transport adapter in the API layer —
@@ -25,6 +25,7 @@ from aibot import WSClient, WSClientOptions, generate_req_id
 
 from nexo.app import handle_file, handle_text
 from nexo.config import WECHAT_BOT_ID, WECHAT_BOT_SECRET
+from nexo.prompts import msg
 
 logger = logging.getLogger("nexo.wecom")
 
@@ -34,7 +35,7 @@ logger = logging.getLogger("nexo.wecom")
 _FLUSH_BYTES = 64
 _FLUSH_INTERVAL = 0.4
 
-_WELCOME_TEXT = "您好！我是 Nexo 智能助手，有什么可以帮您的吗？"
+_WELCOME_TEXT = msg("welcome")
 
 
 def _user_text(frame: dict[str, Any]) -> str:
@@ -55,6 +56,32 @@ def _filename_from_frame(frame: dict[str, Any]) -> str:
         if val:
             return str(val)
     return body.get("msgid", "unknown-file")
+
+
+def _file_url_from_frame(frame: dict[str, Any]) -> str:
+    """Extract the download URL from a `message.file` frame.
+
+    The WeCom file payload carries the link under `body.file.url` (confirmed
+    shape in tests/test_wecom_bridge.py). Returns "" if absent — the caller
+    then surfaces a clear error to the user.
+    """
+    body = frame.get("body", {}) or {}
+    file_obj = body.get("file") or {}
+    url = file_obj.get("url")
+    return str(url) if url else ""
+
+
+def _file_aeskey_from_frame(frame: dict[str, Any]) -> str:
+    """Extract the AES key for decrypting a `message.file` payload.
+
+    WeCom file URLs serve AES-256-CBC-encrypted ciphertext; the Base64 key
+    rides in `body.file.aeskey`. Without it the downloaded bytes are gibberish.
+    Returns "" if absent (download will then return raw, unusable bytes).
+    """
+    body = frame.get("body", {}) or {}
+    file_obj = body.get("file") or {}
+    aeskey = file_obj.get("aeskey") or file_obj.get("aes_key")
+    return str(aeskey) if aeskey else ""
 
 
 def _session_id_from_frame(frame: dict[str, Any]) -> str:
@@ -117,8 +144,8 @@ async def _reply_streamed(
     full: list[str] = []
 
     try:
-        await _send("正在思考…", finish=False)
-        last_sent = "正在思考…"
+        await _send(msg("thinking"), finish=False)
+        last_sent = msg("thinking")
         pending = 0  # bytes accumulated since the last flush
 
         async for chunk in chunks:
@@ -133,15 +160,15 @@ async def _reply_streamed(
 
         # Finish frame: repeat the full text (WeCom replaces on refresh, so an
         # empty content here would wipe the bubble).
-        final_text = "".join(full) or "（无回复）"
+        final_text = "".join(full) or msg("no_reply")
         await _send(final_text, finish=True)
 
     except Exception as exc:  # noqa: BLE001 — must not leave the bubble hanging
         logger.exception("Error while handling WeCom message")
         try:
             partial = "".join(full)
-            msg = f"{partial}\n\n[出错] {exc}".strip() if partial else f"[出错] {exc}"
-            await _send(msg, finish=True)
+            err_text = f"{partial}\n\n[出错] {exc}".strip() if partial else f"[出错] {exc}"
+            await _send(err_text, finish=True)
         except Exception:
             logger.exception("Failed to send error frame to WeCom")
 
@@ -180,16 +207,50 @@ def register_handlers(ws_client: WSClient) -> None:
     async def _on_file(frame: dict[str, Any]) -> None:
         session_id = _session_id_from_frame(frame)
         filename = _filename_from_frame(frame)
+        file_url = _file_url_from_frame(frame)
+        aes_key = _file_aeskey_from_frame(frame)
         logger.info("WeCom file from %s: %s", session_id, filename)
-        # File download is deferred until the documents/ + memory/ pipeline
-        # exists; handle_file currently just acknowledges receipt.
-        await _reply_streamed(ws_client, frame, handle_file(session_id, filename))
+        await _reply_streamed(
+            ws_client, frame,
+            _stream_file(ws_client, session_id, filename, file_url, aes_key),
+        )
 
     @ws_client.on("event.enter_chat")
     async def _on_enter_chat(frame: dict[str, Any]) -> None:
         await ws_client.reply_welcome(
             frame, {"msgtype": "text", "text": {"content": _WELCOME_TEXT}}
         )
+
+
+async def _stream_file(
+    ws_client: WSClient,
+    session_id: str,
+    filename: str,
+    file_url: str,
+    aes_key: str,
+) -> AsyncIterator[str]:
+    """Download + decrypt the file via the SDK, then delegate to the app layer.
+
+    Download and AES decryption are SDK wire-protocol concerns, so they live in
+    this transport adapter; the app/pipeline layer only ever sees plaintext
+    bytes. Yields progress chunks for the WeCom bubble.
+    """
+    if not file_url:
+        yield msg("file_empty_url")
+        return
+
+    yield msg("file_downloading")
+    try:
+        file_data, real_name = await ws_client.download_file(file_url, aes_key)
+    except Exception as exc:  # noqa: BLE001 — tell the user, don't hang the bubble
+        yield msg("file_download_failed", error=exc)
+        return
+
+    # Prefer the SDK-provided filename (Content-Disposition); the frame filename
+    # is often just a WeCom-assigned hash.
+    name = real_name or filename or "unnamed"
+    async for chunk in handle_file(session_id, name, file_data):
+        yield chunk
 
 
 def build_client() -> WSClient:

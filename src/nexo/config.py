@@ -20,6 +20,12 @@ from dotenv import load_dotenv
 _ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_ROOT / ".env")
 
+# --- Data directories ------------------------------------------------------
+# Original downloads land in uploads/; generated summaries in processed/.
+DATA_DIR = _ROOT / "data"
+UPLOADS_DIR = DATA_DIR / "uploads"
+PROCESSED_DIR = DATA_DIR / "processed"
+
 # --- Model (any OpenAI-compatible endpoint) -------------------------------
 # NEXO_MODEL: provider-prefixed name, e.g. openai:gpt-4o-mini / openai:glm-4.6
 # OPENAI_API_KEY / OPENAI_BASE_URL: consumed directly by pydantic-ai.

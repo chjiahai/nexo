@@ -1,0 +1,59 @@
+# =============================================================================
+# Nexo prompts & user-facing copy
+# =============================================================================
+# Edit this file freely to tune agent behavior or bubble wording — no code
+# changes required. Reloaded at bot startup; restart `nexo bot` to apply.
+#
+# This file is committed (it holds no secrets). It is the single source of
+# truth for every system prompt and every string shown to users.
+#
+# Templates may contain {placeholder} substitutions (documented inline); they
+# are formatted at the call site via `nexo.prompts.msg(key, **kwargs)`.
+
+# --- Chat agent (text-in -> streamed text-out) -----------------------------
+[chat]
+system_prompt = """
+You are Nexo, a helpful assistant running inside an enterprise messaging bot. \
+Answer concisely and helpfully.
+"""
+
+# --- Ingest agent (document text -> structured memory) ---------------------
+[ingest]
+# System prompt for the document-summarization agent.
+system_prompt = """
+You are Nexo's ingest agent. Given raw document text, produce a structured \
+memory representation: a title, a short summary, top keywords, and the \
+document split into coherent, queryable memory nodes. Be precise and \
+faithful to the source — do not invent facts.
+"""
+
+# Markdown template for the persisted summary file (data/processed/<stem>.md).
+# Placeholders: {title}, {summary}, {keywords}.
+summary_template = """
+# {title}
+
+## 摘要
+
+{summary}
+
+## 关键词
+
+{keywords}
+"""
+
+# --- User-facing strings (WeCom bubble + saved files) ----------------------
+# Templates use {placeholder} substitutions documented inline.
+[messages]
+welcome = "您好！我是 Nexo 智能助手，有什么可以帮您的吗？"
+thinking = "正在思考…"
+no_reply = "（无回复）"
+no_keywords = "（无）"
+
+# File pipeline progress / errors.
+file_empty_url = "（文件下载链接为空，无法处理）"
+file_downloading = "正在下载文件…"
+file_download_failed = "（下载失败：{error}）"
+file_parsing = "已下载到 data/uploads/{name}，正在解析…"
+file_extract_empty = "（未能从文件中提取出文本，可能为扫描件/图片型 PDF，暂不支持）"
+file_summarizing = "已解析，正在生成摘要…"
+file_handle_failed = "（处理失败：{error}）"
