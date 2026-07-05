@@ -10,6 +10,7 @@ dependencies = [
     "wecom-aibot-python-sdk>=1.0.2",
     "pypdf>=5.0",
     "python-docx>=1.1",
+    "logfire[httpx]>=3.0",
 ]
 
 [project.scripts]

@@ -270,15 +270,17 @@ def build_client() -> WSClient:
 
 async def run() -> None:
     """Connect to WeCom and serve until interrupted."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
-    )
+    # Logging is configured by `nexo.observability.configure()` (called from
+    # the CLI), which bridges stdlib logging into logfire/OTel — no basicConfig here.
+    from nexo.observability import start_heartbeat_loop
+
     ws_client = build_client()
+    heartbeat = start_heartbeat_loop(lambda: ws_client.is_connected)
     try:
         await ws_client.connect()
         # The SDK runs its receive loop as a background task on the running
         # loop; block here until stopped (Ctrl+C / signal).
         await asyncio.Event().wait()
     finally:
+        heartbeat.cancel()
         ws_client.disconnect()

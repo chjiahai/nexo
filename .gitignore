@@ -240,6 +240,8 @@ data/processed/*
 !data/processed/.gitkeep
 data/index/*
 !data/index/.gitkeep
+# Liveness heartbeat written by the bot at runtime (nexo health reads it).
+data/.heartbeat
 
 # Vector stores & embeddings indices
 *.faiss

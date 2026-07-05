@@ -18,11 +18,14 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
-    # `nexo hello` exits 0 if the package imports cleanly — a lightweight
-    # liveness probe for the install, NOT for the WS connection. A dead link
-    # is handled by `restart: unless-stopped` above.
+    # `nexo health` checks the heartbeat file written while the WebSocket is
+    # connected — reflects real business liveness, unlike `nexo hello` (which
+    # only proves the package imports). A dead link is also handled by
+    # `restart: unless-stopped` above.
+    depends_on:
+      - otel-lgtm
     healthcheck:
-      test: ["CMD", "nexo", "hello"]
+      test: ["CMD", "nexo", "health"]
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -32,3 +35,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # OpenTelemetry backend — single container bundling Grafana + Loki + Tempo +
+  # Mimir + OTel Collector. Enable export by setting NEXO_OTEL_ENDPOINT in .env
+  # (e.g. http://otel-lgtm:4318). Left running even if export is off, since it's
+  # harmless and keeps `depends_on` simple.
+  otel-lgtm:
+    image: grafana/otel-lgtm
+    container_name: nexo-otel-lgtm
+    ports:
+      - "3000:3000"    # Grafana UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP

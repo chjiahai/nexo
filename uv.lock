@@ -1117,6 +1117,7 @@ name = "nexo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "logfire", extra = ["httpx"] },
     { name = "pydantic-ai" },
     { name = "pypdf" },
     { name = "python-docx" },
@@ -1132,6 +1133,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "logfire", extras = ["httpx"], specifier = ">=3.0" },
     { name = "pydantic-ai", specifier = ">=2.3.0" },
     { name = "pypdf", specifier = ">=5.0" },
     { name = "python-docx", specifier = ">=1.1" },
