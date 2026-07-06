@@ -21,6 +21,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+import logfire
 from aibot import WSClient, WSClientOptions, generate_req_id
 
 from nexo.app import handle_file, handle_text
@@ -231,8 +232,12 @@ def register_handlers(ws_client: WSClient) -> None:
     async def _on_text(frame: dict[str, Any]) -> None:
         text = _user_text(frame)
         session_id = _session_id_from_frame(frame)
-        logger.info("WeCom text from %s: %s", session_id, text)
-        await _reply_streamed(ws_client, frame, handle_text(session_id, text))
+        # One span covers receipt -> agent run -> LLM call so the whole turn
+        # lands in a single trace (the "WeCom text from..." log and the
+        # pydantic-ai agent span become children of this span).
+        with logfire.span("WeCom text reply", session_id=session_id, text=text):
+            logger.info("WeCom text from %s: %s", session_id, text)
+            await _reply_streamed(ws_client, frame, handle_text(session_id, text))
 
     @ws_client.on("message.file")
     async def _on_file(frame: dict[str, Any]) -> None:
@@ -240,12 +245,13 @@ def register_handlers(ws_client: WSClient) -> None:
         filename = _filename_from_frame(frame)
         file_url = _file_url_from_frame(frame)
         aes_key = _file_aeskey_from_frame(frame)
-        logger.info("WeCom file from %s: %s", session_id, filename)
-        await _reply_streamed(
-            ws_client, frame,
-            _stream_file(ws_client, session_id, filename, file_url, aes_key),
-            accumulate=False,
-        )
+        with logfire.span("WeCom file processing", session_id=session_id, filename=filename):
+            logger.info("WeCom file from %s: %s", session_id, filename)
+            await _reply_streamed(
+                ws_client, frame,
+                _stream_file(ws_client, session_id, filename, file_url, aes_key),
+                accumulate=False,
+            )
 
     @ws_client.on("event.enter_chat")
     async def _on_enter_chat(frame: dict[str, Any]) -> None:
