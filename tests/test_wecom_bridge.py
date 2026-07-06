@@ -196,6 +196,70 @@ def test_reply_streamed_sends_finish_on_error():
     assert "partial" in last_content
 
 
+def test_reply_streamed_replace_mode_each_chunk_stands_alone():
+    """accumulate=False: each chunk is sent as the FULL bubble content (replace),
+    not concatenated with prior stages. Progress messages wipe each other."""
+    fake = FakeWSClient()
+    frame = _text_frame("hi", body_extra={"chatid": "group-1"})
+
+    async def gen():
+        yield "正在下载文件…"
+        yield "已下载到 data/uploads/x.docx，正在解析…"
+        yield "已解析，正在生成摘要…"
+        yield "# 摘要\n\n正文"
+
+    asyncio.run(wecom._reply_streamed(fake, frame, gen(), accumulate=False))
+
+    contents = [c for _, c, _ in fake.stream_calls]
+    # placeholder, then each stage as its own frame (no concatenation).
+    assert contents[0] == "正在思考…"
+    assert contents[1] == "正在下载文件…"
+    assert contents[2] == "已下载到 data/uploads/x.docx，正在解析…"
+    assert contents[3] == "已解析，正在生成摘要…"
+    # No frame ever carries two stages glued together.
+    assert not any("正在下载" in c and "正在解析" in c for c in contents)
+
+
+def test_reply_streamed_replace_mode_finish_is_summary_only():
+    """accumulate=False: the finish frame carries ONLY the summary — all progress
+    is wiped, exactly like a chat reply."""
+    fake = FakeWSClient()
+    frame = _text_frame("hi", body_extra={"chatid": "group-1"})
+
+    async def gen():
+        yield "正在下载文件…"
+        yield "正在解析…"
+        yield "# 摘要正文"
+
+    asyncio.run(wecom._reply_streamed(fake, frame, gen(), accumulate=False))
+
+    last_content, last_finish = fake.stream_calls[-1][1], fake.stream_calls[-1][2]
+    assert last_finish is True
+    assert last_content == "# 摘要正文"
+    # Progress must be gone from the final bubble.
+    assert "正在下载" not in last_content
+    assert "正在解析" not in last_content
+
+
+def test_reply_streamed_replace_mode_error_preserves_last():
+    """accumulate=False: on mid-stream error, the finish frame preserves the last
+    shown stage alongside the error message."""
+    fake = FakeWSClient()
+    frame = _text_frame("hi", body_extra={"chatid": "group-1"})
+
+    async def _boom():
+        yield "正在下载文件…"
+        yield "正在解析…"
+        raise RuntimeError("boom")
+
+    asyncio.run(wecom._reply_streamed(fake, frame, _boom(), accumulate=False))
+
+    last_content, last_finish = fake.stream_calls[-1][1], fake.stream_calls[-1][2]
+    assert last_finish is True
+    assert "boom" in last_content
+    assert "正在解析" in last_content
+
+
 def test_register_handlers_wires_events():
     """register_handlers attaches listeners for text + file + enter_chat."""
     from pyee.asyncio import AsyncIOEventEmitter

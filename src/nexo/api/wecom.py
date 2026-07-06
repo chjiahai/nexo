@@ -126,48 +126,79 @@ def _session_id_from_frame(frame: dict[str, Any]) -> str:
 
 
 async def _reply_streamed(
-    ws_client: WSClient, frame: dict[str, Any], chunks: AsyncIterator[str]
+    ws_client: WSClient,
+    frame: dict[str, Any],
+    chunks: AsyncIterator[str],
+    *,
+    accumulate: bool = True,
 ) -> None:
     """Stream an async generator of reply chunks back to WeCom.
 
     WeCom's stream model REPLACES the bubble content on each refresh (it does
-    not append) — see the long-connection doc's 流式消息回复机制. So every
-    frame carries the FULL accumulated text so far, and the finish frame
-    carries the full final text (an empty finish frame would clear the
-    bubble). On error, send a finish frame preserving any partial text.
+    not append) — every frame carries the FULL text the bubble should show.
+
+    Two modes:
+    - accumulate=True (chat): each frame carries the GROWING accumulated text,
+      so the streamed reply reads like a growing prefix. The finish frame carries
+      the full reply.
+    - accumulate=False (file pipeline): each chunk REPLACES the previous one, so
+      the staged progress messages ("正在下载…" -> "正在解析…" -> "正在生成摘要…")
+      show transiently and are wiped when the next stage appears. The final
+      summary chunk replaces all progress, exactly like a chat reply.
+
+    On error, send a finish frame preserving whatever was last shown.
     """
     stream_id = generate_req_id("stream")
 
     async def _send(content: str, finish: bool) -> None:
         await ws_client.reply_stream(frame, stream_id, content, finish=finish)
 
+    # `last_content` is whatever the bubble currently shows — used both to skip
+    # redundant frames and to preserve partial text on error.
+    last_content = ""
     full: list[str] = []
 
     try:
         await _send(msg("thinking"), finish=False)
-        last_sent = msg("thinking")
-        pending = 0  # bytes accumulated since the last flush
+        last_content = msg("thinking")
 
-        async for chunk in chunks:
-            full.append(chunk)
-            pending += len(chunk)
-            if pending >= _FLUSH_BYTES:
-                text = "".join(full)
-                if text != last_sent:
-                    await _send(text, finish=False)
-                    last_sent = text
-                pending = 0
+        if accumulate:
+            pending = 0  # bytes accumulated since the last flush
+            async for chunk in chunks:
+                full.append(chunk)
+                pending += len(chunk)
+                if pending >= _FLUSH_BYTES:
+                    text = "".join(full)
+                    if text != last_content:
+                        await _send(text, finish=False)
+                        last_content = text
+                    pending = 0
+            last_content = "".join(full) or msg("no_reply")
+        else:
+            # Each chunk stands alone as the full bubble; WeCom replaces, so the
+            # previous stage vanishes. The final chunk is re-sent as the finish
+            # frame below (one redundant frame, harmless).
+            async for chunk in chunks:
+                if chunk and chunk != last_content:
+                    await _send(chunk, finish=False)
+                    last_content = chunk
 
-        # Finish frame: repeat the full text (WeCom replaces on refresh, so an
-        # empty content here would wipe the bubble).
-        final_text = "".join(full) or msg("no_reply")
-        await _send(final_text, finish=True)
+        # Finish frame must carry the final text (an empty finish frame would
+        # wipe the bubble).
+        await _send(last_content or msg("no_reply"), finish=True)
 
     except Exception as exc:  # noqa: BLE001 — must not leave the bubble hanging
         logger.exception("Error while handling WeCom message")
         try:
-            partial = "".join(full)
-            err_text = f"{partial}\n\n[出错] {exc}".strip() if partial else f"[出错] {exc}"
+            # Preserve whatever was generated: in accumulate mode that's the full
+            # joined text (including sub-threshold bytes never flushed); in
+            # replace mode it's the last stage shown.
+            partial = "".join(full) if accumulate else last_content
+            err_text = (
+                f"{partial}\n\n[出错] {exc}".strip()
+                if partial
+                else f"[出错] {exc}"
+            )
             await _send(err_text, finish=True)
         except Exception:
             logger.exception("Failed to send error frame to WeCom")
@@ -213,6 +244,7 @@ def register_handlers(ws_client: WSClient) -> None:
         await _reply_streamed(
             ws_client, frame,
             _stream_file(ws_client, session_id, filename, file_url, aes_key),
+            accumulate=False,
         )
 
     @ws_client.on("event.enter_chat")
