@@ -55,8 +55,9 @@ USER appuser
 
 # Copy source so config.py's Path(__file__).parents[2] == /app holds, making
 # `docker run -v ./.env:/app/.env ...` work without compose.
+# prompts.toml is read at import time by nexo.prompts — must be at /app/prompts.toml.
 COPY --chown=appuser:appgroup src/ ./src/
-COPY --chown=appuser:appgroup pyproject.toml README.md ./
+COPY --chown=appuser:appgroup pyproject.toml README.md prompts.toml ./
 
 ENTRYPOINT ["tini", "--"]
 CMD ["nexo", "bot"]
