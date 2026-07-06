@@ -63,3 +63,6 @@ file_parsing = "已下载到 data/uploads/{name}，正在解析…"
 file_extract_empty = "（未能从文件中提取出文本，可能为扫描件/图片型 PDF，暂不支持）"
 file_summarizing = "已解析，正在生成摘要…"
 file_handle_failed = "（处理失败：{error}）"
+
+# Images: no OCR in the pipeline — tell the user what IS supported.
+image_not_supported = "（图片消息暂不支持。请发送文字与我对话，或发送 Word/PDF 文档，我会为您生成摘要。）"

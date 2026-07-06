@@ -253,6 +253,19 @@ def register_handlers(ws_client: WSClient) -> None:
                 accumulate=False,
             )
 
+    @ws_client.on("message.image")
+    async def _on_image(frame: dict[str, Any]) -> None:
+        # Images arrive as msgtype=image with image.{url,aeskey} (same encrypted
+        # shape as files), but the pipeline has no OCR — acknowledge clearly
+        # instead of silently dropping the message.
+        session_id = _session_id_from_frame(frame)
+        logger.info("WeCom image from %s (unsupported, no OCR)", session_id)
+
+        async def _reply() -> AsyncIterator[str]:
+            yield msg("image_not_supported")
+
+        await _reply_streamed(ws_client, frame, _reply())
+
     @ws_client.on("event.enter_chat")
     async def _on_enter_chat(frame: dict[str, Any]) -> None:
         await ws_client.reply_welcome(

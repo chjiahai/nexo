@@ -261,7 +261,7 @@ def test_reply_streamed_replace_mode_error_preserves_last():
 
 
 def test_register_handlers_wires_events():
-    """register_handlers attaches listeners for text + file + enter_chat."""
+    """register_handlers attaches listeners for text + image + file + enter_chat."""
     from pyee.asyncio import AsyncIOEventEmitter
 
     class StubClient(AsyncIOEventEmitter):
@@ -271,8 +271,43 @@ def test_register_handlers_wires_events():
     stub = StubClient()
     wecom.register_handlers(stub)
     assert stub.listeners("message.text")
+    assert stub.listeners("message.image")
     assert stub.listeners("message.file")
     assert stub.listeners("event.enter_chat")
+
+
+def test_image_message_replies_not_supported():
+    """An image (no OCR) gets a clear 'not supported' reply, not silence."""
+    from pyee.asyncio import AsyncIOEventEmitter
+
+    class EmitterClient(AsyncIOEventEmitter):
+        def __init__(self):
+            super().__init__()
+            self.stream_calls: list[tuple[str, str, bool]] = []
+
+        async def reply_stream(self, frame, stream_id, content, finish=False, **_):
+            self.stream_calls.append((stream_id, content, finish))
+
+        async def reply_welcome(self, frame, body):
+            pass
+
+    fake = EmitterClient()
+    wecom.register_handlers(fake)
+    frame = _text_frame("hi", body_extra={"chatid": "group-1", "msgtype": "image"})
+
+    async def _go():
+        # emit() is sync; it schedules the async handler on this loop. Yield
+        # once so the scheduled task actually runs to completion.
+        fake.emit("message.image", frame)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_go())
+
+    contents = [c for _, c, _ in fake.stream_calls]
+    assert contents, "expected a reply for image messages"
+    assert "图片消息暂不支持" in contents[-1]
+    # Last frame is the finish frame.
+    assert fake.stream_calls[-1][2] is True
 
 
 def test_stream_file_downloads_and_delegates(monkeypatch):
