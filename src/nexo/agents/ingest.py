@@ -1,8 +1,8 @@
-"""Minimal ingest agent: raw document text -> structured memory.
+"""Ingest agent: raw document text -> structured summary.
 
-This is the first agent in Nexo's pipeline. It demonstrates the single-agent
-pattern: one role, one system prompt, one structured output type. Orchestration
-(sequencing / delegating to other agents) comes later in `app.py`.
+Single-agent pattern: one role, one system prompt, one structured output type.
+The output schema (`IngestResult`) mirrors the summary template rendered to
+`data/processed/<stem>.md` by `nexo.documents.pipeline._format_markdown`.
 """
 
 from __future__ import annotations
@@ -15,22 +15,24 @@ from nexo.config import MODEL_NAME
 from nexo.prompts import INGEST_SYSTEM_PROMPT
 
 
-class MemoryNode(BaseModel):
-    """A single chunk of extracted, queryable memory."""
+class KeyPoint(BaseModel):
+    """One bullet of the「核心要点提炼」section."""
 
-    text: str = Field(description="The extracted text chunk")
-    topic: str = Field(description="Short topic label for this chunk")
+    headline: str = Field(description="核心词或小标题，简短")
+    detail: str = Field(description="具体解释，含关键数据/事实/论据")
 
 
 class IngestResult(BaseModel):
-    """Structured output of the ingest agent — the document as memory."""
+    """Structured summary of a document, following the summary template."""
 
-    title: str = Field(description="Concise title for the document")
-    summary: str = Field(description="2-3 sentence summary")
-    keywords: list[str] = Field(default_factory=list, description="Top keywords")
-    memory_nodes: list[MemoryNode] = Field(
-        default_factory=list,
-        description="Document split into coherent, queryable memory chunks",
+    core_summary: str = Field(description="一句话核心摘要，不超过50字")
+    key_points: list[KeyPoint] = Field(description="3-5 个核心要点")
+    tags: list[str] = Field(description="3-5 个关键词/标签")
+    background: str | None = Field(
+        default=None, description="背景/上下文，文档无明确背景则留空"
+    )
+    action_items: list[str] = Field(
+        default_factory=list, description="下步行动/待办事项，文档不涉及则留空"
     )
 
 
@@ -51,6 +53,6 @@ _NO_THINK_SETTINGS = ModelSettings(extra_body={"thinking": {"type": "disabled"}}
 
 
 async def run(text: str) -> IngestResult:
-    """Run the ingest agent on a document and return structured memory."""
+    """Run the ingest agent on a document and return the structured summary."""
     result = await ingest_agent.run(text, model_settings=_NO_THINK_SETTINGS)
     return result.output

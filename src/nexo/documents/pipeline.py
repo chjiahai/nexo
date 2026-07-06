@@ -22,7 +22,7 @@ from pathlib import Path
 
 from nexo.agents.ingest import IngestResult, run as ingest_agent_run
 from nexo.config import PROCESSED_DIR, UPLOADS_DIR
-from nexo.prompts import INGEST_SUMMARY_TEMPLATE, msg
+from nexo.prompts import msg
 
 
 async def process_file(file_data: bytes, filename: str) -> AsyncIterator[str]:
@@ -113,8 +113,32 @@ def _read_text(path: Path) -> str:
 
 
 def _format_markdown(result: IngestResult) -> str:
-    """Render an IngestResult as a self-contained summary markdown document."""
-    keywords = ", ".join(result.keywords) if result.keywords else msg("no_keywords")
-    return INGEST_SUMMARY_TEMPLATE.format(
-        title=result.title, summary=result.summary, keywords=keywords
+    """Render an IngestResult as a self-contained summary markdown document,
+    following the template: 📌 核心摘要 / 🎯 核心要点 / 🔑 关键词, plus the
+    optional 🎬 背景 and 🛠️ 下步行动 sections (only when the agent filled them).
+    """
+    out: list[str] = [
+        "## 📌 一句话核心摘要",
+        "",
+        result.core_summary,
+        "",
+        "## 🎯 核心要点提炼",
+        "",
+    ]
+    for kp in result.key_points:
+        out.append(f"- **{kp.headline}**：{kp.detail}")
+
+    out += ["", "## 🔑 关键词/标签", ""]
+    out.append(
+        " ".join(f"#{t}" for t in result.tags) if result.tags else msg("no_keywords")
     )
+
+    if result.background:
+        out += ["", "## 🎬 背景/上下文", "", result.background]
+
+    if result.action_items:
+        out += ["", "## 🛠️ 下步行动/待办事项", ""]
+        out += [f"- {a}" for a in result.action_items]
+
+    out.append("")
+    return "\n".join(out)

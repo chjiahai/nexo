@@ -12,7 +12,6 @@ import pytest
 
 from nexo.prompts import (
     CHAT_SYSTEM_PROMPT,
-    INGEST_SUMMARY_TEMPLATE,
     INGEST_SYSTEM_PROMPT,
     msg,
 )
@@ -25,21 +24,11 @@ def test_chat_system_prompt_is_nonempty():
 
 def test_ingest_system_prompt_is_nonempty():
     assert INGEST_SYSTEM_PROMPT.strip()
-    assert "ingest agent" in INGEST_SYSTEM_PROMPT
-
-
-def test_ingest_summary_template_has_placeholders():
-    """The summary template must carry the three fields _format_markdown fills."""
-    assert "{title}" in INGEST_SUMMARY_TEMPLATE
-    assert "{summary}" in INGEST_SUMMARY_TEMPLATE
-    assert "{keywords}" in INGEST_SUMMARY_TEMPLATE
-    # And it renders cleanly with all three.
-    rendered = INGEST_SUMMARY_TEMPLATE.format(
-        title="T", summary="S", keywords="k1, k2"
-    )
-    assert rendered.startswith("# T")
-    assert "S" in rendered
-    assert "k1, k2" in rendered
+    # The new prompt drives the summary template — it must mention the key
+    # contract terms (faithfulness + the core-summary length cap).
+    assert "忠于" in INGEST_SYSTEM_PROMPT
+    assert "core_summary" in INGEST_SYSTEM_PROMPT
+    assert "500" in INGEST_SYSTEM_PROMPT
 
 
 def test_msg_returns_plain_string_without_placeholders():

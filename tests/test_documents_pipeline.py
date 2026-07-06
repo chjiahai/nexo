@@ -39,10 +39,17 @@ async def _collect(file_data: bytes, filename: str) -> list[str]:
 
 
 def _fake_ingest_result() -> IngestResult:
+    from nexo.agents.ingest import KeyPoint
+
     return IngestResult(
-        title="Sample Title",
-        summary="A short summary of the document.",
-        keywords=["alpha", "beta"],
+        core_summary="这是一份关于示例文档的核心摘要。",
+        key_points=[
+            KeyPoint(headline="要点甲", detail="含关键数据 100 的解释。"),
+            KeyPoint(headline="要点乙", detail="另一条带事实的说明。"),
+        ],
+        tags=["alpha", "beta"],
+        background=None,
+        action_items=[],
     )
 
 
@@ -91,15 +98,64 @@ def test_extract_text_unsupported_type(tmp_path: Path):
 
 # --- _format_markdown ------------------------------------------------------
 
-def test_format_markdown_includes_title_summary_keywords():
+def test_format_markdown_renders_required_sections():
     md = pipeline._format_markdown(_fake_ingest_result())
-    assert "# Sample Title" in md
-    assert "A short summary of the document." in md
-    assert "alpha, beta" in md
+    # Required sections present.
+    assert "## 📌 一句话核心摘要" in md
+    assert "这是一份关于示例文档的核心摘要。" in md
+    assert "## 🎯 核心要点提炼" in md
+    # Key points render as **headline**：detail.
+    assert "**要点甲**：含关键数据 100 的解释。" in md
+    assert "**要点乙**：另一条带事实的说明。" in md
+    # Tags render as #tag.
+    assert "## 🔑 关键词/标签" in md
+    assert "#alpha #beta" in md
+    # Optional sections absent when not filled.
+    assert "背景/上下文" not in md
+    assert "下步行动" not in md
 
 
-def test_format_markdown_handles_empty_keywords():
-    result = IngestResult(title="T", summary="S", keywords=[])
+def test_format_markdown_omits_optional_sections_when_empty():
+    from nexo.agents.ingest import KeyPoint
+
+    result = IngestResult(
+        core_summary="只有摘要。",
+        key_points=[KeyPoint(headline="唯一", detail="说明。")],
+        tags=["x"],
+        background=None,
+        action_items=[],
+    )
+    md = pipeline._format_markdown(result)
+    assert "背景/上下文" not in md
+    assert "下步行动" not in md
+
+
+def test_format_markdown_includes_optional_sections_when_filled():
+    from nexo.agents.ingest import KeyPoint
+
+    result = IngestResult(
+        core_summary="带可选节的摘要。",
+        key_points=[KeyPoint(headline="要点", detail="说明。")],
+        tags=["x"],
+        background="文档成文于某次会议之后。",
+        action_items=["张三 8 月底前完成方案", "复核数据"],
+    )
+    md = pipeline._format_markdown(result)
+    assert "## 🎬 背景/上下文" in md
+    assert "文档成文于某次会议之后。" in md
+    assert "## 🛠️ 下步行动/待办事项" in md
+    assert "- 张三 8 月底前完成方案" in md
+    assert "- 复核数据" in md
+
+
+def test_format_markdown_handles_empty_tags():
+    from nexo.agents.ingest import KeyPoint
+
+    result = IngestResult(
+        core_summary="x",
+        key_points=[KeyPoint(headline="h", detail="d")],
+        tags=[],
+    )
     md = pipeline._format_markdown(result)
     assert "（无）" in md
 
@@ -115,12 +171,12 @@ def test_process_file_end_to_end(monkeypatch):
     # Progress + final summary streamed out.
     assert any("正在解析" in c for c in chunks)
     assert any("正在生成摘要" in c for c in chunks)
-    assert chunks[-1].startswith("# Sample Title")
+    assert chunks[-1].startswith("## 📌 一句话核心摘要")
 
     # Original file persisted under uploads/, summary under processed/.
     assert (pipeline.UPLOADS_DIR / "note.txt").read_bytes() == b"the quick brown fox"
     out_md = (pipeline.PROCESSED_DIR / "note.md").read_text(encoding="utf-8")
-    assert "Sample Title" in out_md
+    assert "这是一份关于示例文档的核心摘要。" in out_md
 
 
 def test_process_file_empty_text_short_circuits(monkeypatch):

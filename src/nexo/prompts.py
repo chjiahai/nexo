@@ -32,10 +32,6 @@ with _PROMPTS_FILE.open("rb") as _f:
 CHAT_SYSTEM_PROMPT: str = _data["chat"]["system_prompt"].strip()
 INGEST_SYSTEM_PROMPT: str = _data["ingest"]["system_prompt"].strip()
 
-# Markdown template for the persisted summary file. Placeholders:
-# {title}, {summary}, {keywords}.
-INGEST_SUMMARY_TEMPLATE: str = _data["ingest"]["summary_template"].strip()
-
 # --- User-facing message templates ----------------------------------------
 _MESSAGES: dict[str, str] = _data["messages"]
 
