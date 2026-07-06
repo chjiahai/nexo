@@ -59,7 +59,7 @@ def configure() -> None:
             console=console,
             additional_span_processors=[_otlp_span_processor(otel_endpoint)],
             metrics=logfire.MetricsOptions(
-                metric_readers=[_otlp_metric_reader(otel_endpoint)]
+                additional_readers=[_otlp_metric_reader(otel_endpoint)]
             ),
         )
         logger.info("OTel export enabled -> %s", otel_endpoint)
