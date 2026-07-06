@@ -243,6 +243,9 @@ data/index/*
 # Liveness heartbeat written by the bot at runtime (nexo health reads it).
 data/.heartbeat
 
+# Remote deploy target config (names an internal test host + path).
+scripts/deploy.env
+
 # Vector stores & embeddings indices
 *.faiss
 *.pkl.embeddings

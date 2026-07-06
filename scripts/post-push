@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# scripts/post-push — git hook template.
+#
+# Install (one-time):
+#   cp scripts/post-push .git/hooks/post-push
+#   chmod +x .git/hooks/post-push
+#
+# Fires after `git push` succeeds. Deploys only when `main` was among the
+# pushed refs — pushing other branches is a no-op. The hook delegates all the
+# real work to scripts/deploy.sh.
+#
+# git feeds pushed refs on stdin, one line per ref:
+#   <local-ref> <local-sha> <remote-ref> <remote-sha>
+
+set -euo pipefail
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [[ "${remote_ref}" == "refs/heads/main" ]]; then
+    echo "==> main pushed; deploying to remote test host..."
+    # repo root (works for both normal clones and worktrees)
+    repo_root="$(git rev-parse --git-common-dir)/.."
+    repo_root="$(cd "${repo_root}" && pwd)"
+    exec bash "${repo_root}/scripts/deploy.sh"
+  fi
+done
