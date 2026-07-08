@@ -10,6 +10,7 @@ are tested directly.
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -71,14 +72,24 @@ def test_safe_name_truncates_overlong_while_keeping_extension():
     assert safe.endswith(".pdf")
 
 
-def test_build_key_is_time_prefixed_and_sortable():
-    key = obs._build_key("uploads", "report.pdf")
-    # prefix/YYYYMMDD/HHMMSS-leaf
+def test_safe_user_id_strips_channel_prefix_and_scrubs_separators():
+    assert obs._safe_user_id("wecom:2") == "2"
+    assert obs._safe_user_id("wecom:group-xyz") == "group-xyz"
+    assert obs._safe_user_id("plain") == "plain"  # no channel prefix -> kept whole
+    # Separators inside the id portion are scrubbed (path-traversal guard).
+    assert obs._safe_user_id("wecom:a/b") == "a_b"
+    assert obs._safe_user_id("wecom:a:b") == "a_b"
+    assert obs._safe_user_id("") == "unknown"
+
+
+def test_build_key_groups_by_user_and_is_time_prefixed():
+    key = obs._build_key("docs", "wecom:2", "report.pdf")
+    # prefix/<user_id>/YYYYMMDD-HHMMSS-leaf
     parts = key.split("/")
-    assert parts[0] == "uploads"
-    assert parts[1].isdigit() and len(parts[1]) == 8  # YYYYMMDD
-    assert parts[2].endswith("-report.pdf")
-    assert len(parts[2].split("-")[0]) == 6  # HHMMSS
+    assert parts[0] == "docs"
+    assert parts[1] == "2"  # channel prefix stripped from the session id
+    assert len(parts) == 3  # no extra nesting beyond the user folder
+    assert re.match(r"^\d{8}-\d{6}-report\.pdf$", parts[2]), parts[2]
 
 
 # --- put_bytes via injected fake client ------------------------------------
@@ -113,9 +124,9 @@ def test_put_bytes_raises_on_obs_error(fake_client):
 
 # --- upload_upload / upload_image ------------------------------------------
 
-def test_upload_upload_builds_key_and_keeps_original_name(fake_client):
-    key = asyncio.run(obs.upload_upload("报告.docx", b"doc-bytes"))
-    assert key.startswith("uploads/")
+def test_upload_upload_builds_key_under_docs_user_folder(fake_client):
+    key = asyncio.run(obs.upload_upload("wecom:2", "报告.docx", b"doc-bytes"))
+    assert key.startswith("docs/2/")
     assert key.endswith("报告.docx")
     put = fake_client.puts[0]
     assert put["content"] == b"doc-bytes"
@@ -124,8 +135,8 @@ def test_upload_upload_builds_key_and_keeps_original_name(fake_client):
 
 def test_upload_image_sniffs_ext_and_sets_content_type(fake_client):
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
-    key = asyncio.run(obs.upload_image(png))
-    assert key.startswith("images/")
+    key = asyncio.run(obs.upload_image("wecom:2", png))
+    assert key.startswith("imgs/2/")
     assert key.endswith(".png")
     put = fake_client.puts[0]
     assert put["headers"] == {"contentType": "image/png"}
@@ -133,7 +144,8 @@ def test_upload_image_sniffs_ext_and_sets_content_type(fake_client):
 
 
 def test_upload_image_unknown_format_uses_bin(fake_client):
-    key = asyncio.run(obs.upload_image(b"\x00\x01weird"))
+    key = asyncio.run(obs.upload_image("wecom:2", b"\x00\x01weird"))
+    assert key.startswith("imgs/2/")
     assert key.endswith(".bin")
     assert fake_client.puts[0]["headers"] == {
         "contentType": "application/octet-stream"

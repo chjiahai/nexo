@@ -21,8 +21,8 @@ from nexo.documents import pipeline
 @pytest.fixture(autouse=True)
 def _stub_obs(monkeypatch):
     """Stub the OBS upload so pipeline tests never hit the network."""
-    async def fake_upload(filename: str, data: bytes) -> str:
-        return f"uploads/fake/{filename}"
+    async def fake_upload(user_id: str, filename: str, data: bytes) -> str:
+        return f"docs/fake/{user_id}/{filename}"
 
     monkeypatch.setattr(pipeline, "upload_upload", fake_upload)
     yield
@@ -30,9 +30,9 @@ def _stub_obs(monkeypatch):
 
 # --- helpers ---------------------------------------------------------------
 
-async def _collect(file_data: bytes, filename: str) -> list[str]:
+async def _collect(file_data: bytes, filename: str, user_id: str = "wecom:u1") -> list[str]:
     chunks: list[str] = []
-    async for chunk in pipeline.process_file(file_data, filename):
+    async for chunk in pipeline.process_file(file_data, filename, user_id):
         chunks.append(chunk)
     return chunks
 
@@ -150,28 +150,28 @@ def test_process_file_end_to_end(monkeypatch):
     """Upload original to OBS -> extract (txt) -> summarize (faked) -> reply."""
     monkeypatch.setattr(pipeline, "ingest_agent_run", _async_ingest)
 
-    uploaded: list[tuple[str, bytes]] = []
+    uploaded: list[tuple[str, str, bytes]] = []
 
-    async def record_upload(filename: str, data: bytes) -> str:
-        uploaded.append((filename, data))
-        return "uploads/fake/note.txt"
+    async def record_upload(user_id: str, filename: str, data: bytes) -> str:
+        uploaded.append((user_id, filename, data))
+        return "docs/fake/u1/note.txt"
 
     monkeypatch.setattr(pipeline, "upload_upload", record_upload)
 
-    chunks = asyncio.run(_collect(b"the quick brown fox", "note.txt"))
+    chunks = asyncio.run(_collect(b"the quick brown fox", "note.txt", "wecom:u1"))
 
     # Progress + final summary streamed out.
     assert any("正在解析" in c for c in chunks)
     assert any("正在生成摘要" in c for c in chunks)
     assert chunks[-1].startswith("## 📌 一句话核心摘要")
 
-    # Original bytes uploaded to OBS exactly once; nothing written locally.
-    assert uploaded == [("note.txt", b"the quick brown fox")]
+    # Original bytes uploaded to OBS once, under the user's folder; nothing local.
+    assert uploaded == [("wecom:u1", "note.txt", b"the quick brown fox")]
 
 
 def test_process_file_upload_failure_surfaces_error(monkeypatch):
     """An OBS upload error becomes a readable message; summarization is skipped."""
-    async def fail_upload(filename: str, data: bytes) -> str:
+    async def fail_upload(user_id: str, filename: str, data: bytes) -> str:
         raise RuntimeError("obs down")
 
     async def fail_ingest(_):  # pragma: no cover — must not run

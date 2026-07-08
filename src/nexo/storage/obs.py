@@ -6,13 +6,15 @@ so the event loop never blocks on a network round-trip. The client itself is
 built lazily once (module-level singleton) from config, mirroring how the
 WeCom client is constructed in `wecom.build_client`.
 
-Object keys are time-prefixed for natural ordering and collision avoidance:
+Object keys are grouped by user (the WeCom conversation id), then
+time-prefixed for ordering and collision avoidance:
 
-    uploads/YYYYMMDD/HHMMSS-<safe-name>   # original file uploads
-    images/YYYYMMDD/HHMMSS-image.<ext>    # image uploads (ext sniffed from bytes)
+    docs/<user_id>/YYYYMMDD-HHMMSS-<safe-name>   # original file uploads
+    imgs/<user_id>/YYYYMMDD-HHMMSS-image.<ext>   # image uploads (ext sniffed)
 
-The true original filename is preserved in object metadata (`x-obs-meta-original-name`)
-because the key itself is rewritten with a time prefix. Summaries are NOT
+`<user_id>` is derived from the bot's session id (e.g. `wecom:2` -> `2`).
+The true original filename is preserved in object metadata
+(`x-obs-meta-original-name`) because the key is rewritten. Summaries are NOT
 stored here by design (they only surface as the WeCom reply text).
 
 API reference: https://support.huaweicloud.com/sdk-python-devg-obs/obs_22_0500.html
@@ -84,10 +86,22 @@ def _safe_name(name: str) -> str:
     return base[:180]
 
 
-def _build_key(prefix: str, leaf: str) -> str:
-    """`prefix/YYYYMMDD/HHMMSS-<leaf>` — sortable and collision-resistant."""
+def _safe_user_id(user_id: str) -> str:
+    """Normalize a session/user id into a path-safe OBS key segment.
+
+    Session ids look like `wecom:<userid>` (single chat) or `wecom:<chatid>`
+    (group). We drop the channel prefix to get the raw user/conversation id,
+    then scrub path separators so it can never escape its folder.
+    """
+    raw = user_id.split(":", 1)[1] if ":" in user_id else user_id
+    safe = raw.replace("/", "_").replace(":", "_").strip()
+    return safe or "unknown"
+
+
+def _build_key(prefix: str, user_id: str, leaf: str) -> str:
+    """`prefix/<user_id>/YYYYMMDD-HHMMSS-<leaf>` — grouped by user, time-ordered."""
     now = datetime.now()
-    return f"{prefix}/{now:%Y%m%d}/{now:%H%M%S}-{leaf}"
+    return f"{prefix}/{_safe_user_id(user_id)}/{now:%Y%m%d-%H%M%S}-{leaf}"
 
 
 # --- image format sniffing --------------------------------------------------
@@ -161,18 +175,18 @@ async def put_bytes(
     return key
 
 
-async def upload_upload(filename: str, data: bytes) -> str:
-    """Persist an original file upload; returns the OBS object key."""
-    key = _build_key("uploads", _safe_name(filename))
+async def upload_upload(user_id: str, filename: str, data: bytes) -> str:
+    """Persist an original file upload under docs/<user_id>/; returns the key."""
+    key = _build_key("docs", user_id, _safe_name(filename))
     # Preserve the real original name in metadata — the key is time-prefixed.
     await put_bytes(key, data, metadata={"original-name": filename})
     return key
 
 
-async def upload_image(data: bytes) -> str:
-    """Persist an image upload (extension sniffed from bytes); returns the key."""
+async def upload_image(user_id: str, data: bytes) -> str:
+    """Persist an image upload under imgs/<user_id>/; ext sniffed from bytes."""
     ext = _sniff_image_ext(data)
-    key = _build_key("images", f"image.{ext}")
+    key = _build_key("imgs", user_id, f"image.{ext}")
     await put_bytes(key, data, content_type=_IMAGE_CONTENT_TYPES[ext])
     return key
 

@@ -27,21 +27,21 @@ from nexo.prompts import msg
 from nexo.storage.obs import upload_upload
 
 
-async def process_file(file_data: bytes, filename: str) -> AsyncIterator[str]:
+async def process_file(file_data: bytes, filename: str, user_id: str) -> AsyncIterator[str]:
     """Persist the original to OBS, extract text in memory, summarize, reply.
 
     `file_data` is the already-downloaded-and-decrypted file content (the
     transport layer handles download + AES decryption). The original is uploaded
-    to OBS; text is extracted from an in-memory buffer. Yields progress messages
-    and finally the summary markdown. The summary is not persisted — it only
-    surfaces as the WeCom reply.
+    to OBS under docs/<user_id>/; text is extracted from an in-memory buffer.
+    Yields progress messages and finally the summary markdown. The summary is
+    not persisted — it only surfaces as the WeCom reply.
     """
     if not file_data:
         raise ValueError("文件内容为空，无法处理")
 
     # 1. Persist the original to OBS (durable store; nothing written locally).
     try:
-        await upload_upload(filename, file_data)
+        await upload_upload(user_id, filename, file_data)
     except Exception as exc:  # noqa: BLE001 — surface a readable message, don't hang the bubble
         yield msg("file_save_failed", error=exc)
         return

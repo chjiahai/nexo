@@ -83,7 +83,7 @@ def test_reset_session_clears_history(test_model):
 
 def test_handle_file_surfaces_pipeline_chunks(monkeypatch):
     """handle_file streams whatever the documents pipeline yields."""
-    async def fake_process(file_data, filename):
+    async def fake_process(file_data, filename, user_id):
         yield f"fake:{filename}:{len(file_data)}"
 
     monkeypatch.setattr("nexo.documents.pipeline.process_file", fake_process)
@@ -93,7 +93,7 @@ def test_handle_file_surfaces_pipeline_chunks(monkeypatch):
 
 def test_handle_file_wraps_pipeline_errors(monkeypatch):
     """A pipeline failure becomes a friendly Chinese message, not a crash."""
-    async def boom(file_data, filename):
+    async def boom(file_data, filename, user_id):
         raise RuntimeError("boom")
         yield  # pragma: no cover — make it an async generator
 
@@ -105,21 +105,21 @@ def test_handle_file_wraps_pipeline_errors(monkeypatch):
 
 def test_handle_image_stores_and_acks(monkeypatch):
     """handle_image uploads the image to OBS and replies with the saved message."""
-    uploaded: list[bytes] = []
+    uploaded: list[tuple[str, bytes]] = []
 
-    async def fake_upload(data: bytes) -> str:
-        uploaded.append(data)
-        return "images/fake/key"
+    async def fake_upload(user_id: str, data: bytes) -> str:
+        uploaded.append((user_id, data))
+        return "imgs/fake/key"
 
     monkeypatch.setattr("nexo.storage.obs.upload_image", fake_upload)
     out = asyncio.run(_collect_image("s7", b"\x89PNG\r\n\x1a\n..."))
-    assert uploaded == [b"\x89PNG\r\n\x1a\n..."]
+    assert uploaded == [("s7", b"\x89PNG\r\n\x1a\n...")]
     assert "图片已收到" in out
 
 
 def test_handle_image_wraps_upload_errors(monkeypatch):
     """An OBS upload failure becomes a friendly Chinese message, not a crash."""
-    async def boom(data: bytes) -> str:
+    async def boom(user_id: str, data: bytes) -> str:
         raise RuntimeError("boom")
 
     monkeypatch.setattr("nexo.storage.obs.upload_image", boom)

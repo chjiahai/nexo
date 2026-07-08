@@ -56,7 +56,7 @@ async def handle_file(session_id: str, filename: str, file_data: bytes) -> Async
     from nexo.prompts import msg
 
     try:
-        async for chunk in process_file(file_data, filename):
+        async for chunk in process_file(file_data, filename, session_id):
             yield chunk
     except Exception as exc:  # noqa: BLE001 — surface a readable message to the user
         yield msg("file_handle_failed", error=exc)
@@ -67,15 +67,15 @@ async def handle_image(session_id: str, image_data: bytes) -> AsyncIterator[str]
 
     `image_data` is the already-downloaded-and-decrypted image bytes (the
     transport layer handles download + AES decryption). The image is persisted
-    to OBS; we reply with a short confirmation. No OCR/vision yet — storage is
-    the first step toward a later multimodal pipeline.
+    to OBS under imgs/<user_id>/; we reply with a short confirmation. No
+    OCR/vision yet — storage is the first step toward a later multimodal pipeline.
     """
     from nexo.prompts import msg
     from nexo.storage.obs import upload_image
 
     try:
         yield msg("image_saving")
-        await upload_image(image_data)
+        await upload_image(session_id, image_data)
         yield msg("image_saved")
     except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
         yield msg("image_save_failed", error=exc)
