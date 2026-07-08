@@ -40,7 +40,7 @@ def test_msg_formats_placeholders():
     out = msg("file_download_failed", error="bad aeskey")
     assert out == "（下载失败：bad aeskey）"
     out2 = msg("file_parsing", name="report.pdf")
-    assert out2 == "已下载到 data/uploads/report.pdf，正在解析…"
+    assert out2 == "已下载 report.pdf，正在解析…"
 
 
 def test_msg_raises_on_unknown_key():

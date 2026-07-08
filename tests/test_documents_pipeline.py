@@ -1,15 +1,16 @@
 """Tests for the documents processing pipeline.
 
-Hermetic: no network, no real LLM. `ingest_agent_run` is monkeypatched;
-UPLOADS_DIR / PROCESSED_DIR are redirected to tmp_path so the tests never
-touch the real data/ tree. The pipeline receives already-decrypted bytes
-(download + AES decrypt is the transport layer's job).
+Hermetic: no network, no real LLM, no real OBS. `ingest_agent_run` and
+`upload_upload` are monkeypatched, so the pipeline never touches the real OBS
+service or any model. The pipeline receives already-decrypted bytes (download
++ AES decrypt is the transport layer's job); text is now extracted in memory,
+so nothing is written to disk anymore.
 """
 
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+import io
 
 import pytest
 
@@ -18,14 +19,12 @@ from nexo.documents import pipeline
 
 
 @pytest.fixture(autouse=True)
-def _redirect_dirs(tmp_path: Path, monkeypatch):
-    """Keep file writes inside tmp_path."""
-    uploads = tmp_path / "uploads"
-    processed = tmp_path / "processed"
-    uploads.mkdir()
-    processed.mkdir()
-    monkeypatch.setattr(pipeline, "UPLOADS_DIR", uploads)
-    monkeypatch.setattr(pipeline, "PROCESSED_DIR", processed)
+def _stub_obs(monkeypatch):
+    """Stub the OBS upload so pipeline tests never hit the network."""
+    async def fake_upload(filename: str, data: bytes) -> str:
+        return f"uploads/fake/{filename}"
+
+    monkeypatch.setattr(pipeline, "upload_upload", fake_upload)
     yield
 
 
@@ -53,47 +52,32 @@ def _fake_ingest_result() -> IngestResult:
     )
 
 
-# --- _safe_filename --------------------------------------------------------
+# --- _extract_text (now reads bytes in memory) -----------------------------
 
-def test_safe_filename_strips_directory_components():
-    """Path traversal attempts are reduced to a bare basename."""
-    assert pipeline._safe_filename("../../etc/passwd") == "passwd"
-    assert pipeline._safe_filename("sub/dir/report.pdf") == "report.pdf"
-    assert pipeline._safe_filename("plain.pdf") == "plain.pdf"
+def test_extract_text_txt():
+    assert pipeline._extract_text("note.txt", b"hello world") == "hello world"
 
 
-# --- _extract_text ---------------------------------------------------------
-
-def test_extract_text_txt(tmp_path: Path):
-    f = tmp_path / "note.txt"
-    f.write_text("hello world", encoding="utf-8")
-    assert pipeline._extract_text(f) == "hello world"
-
-
-def test_extract_text_docx(tmp_path: Path):
+def test_extract_text_docx():
     docx = pytest.importorskip("docx")
-    f = tmp_path / "doc.docx"
     document = docx.Document()
     document.add_paragraph("First paragraph.")
     document.add_paragraph("Second paragraph.")
-    document.save(str(f))
-    text = pipeline._extract_text(f)
+    buf = io.BytesIO()
+    document.save(buf)
+    text = pipeline._extract_text("doc.docx", buf.getvalue())
     assert "First paragraph." in text
     assert "Second paragraph." in text
 
 
-def test_extract_text_doc_raises_not_implemented(tmp_path: Path):
-    f = tmp_path / "old.doc"
-    f.write_bytes(b"dummy")
+def test_extract_text_doc_raises_not_implemented():
     with pytest.raises(NotImplementedError):
-        pipeline._extract_text(f)
+        pipeline._extract_text("old.doc", b"dummy")
 
 
-def test_extract_text_unsupported_type(tmp_path: Path):
-    f = tmp_path / "image.png"
-    f.write_bytes(b"dummy")
+def test_extract_text_unsupported_type():
     with pytest.raises(ValueError, match="不支持的文件类型"):
-        pipeline._extract_text(f)
+        pipeline._extract_text("image.png", b"dummy")
 
 
 # --- _format_markdown ------------------------------------------------------
@@ -163,8 +147,16 @@ def test_format_markdown_handles_empty_tags():
 # --- process_file end-to-end ----------------------------------------------
 
 def test_process_file_end_to_end(monkeypatch):
-    """Persist bytes -> extract (txt) -> summarize (faked) -> write summary."""
+    """Upload original to OBS -> extract (txt) -> summarize (faked) -> reply."""
     monkeypatch.setattr(pipeline, "ingest_agent_run", _async_ingest)
+
+    uploaded: list[tuple[str, bytes]] = []
+
+    async def record_upload(filename: str, data: bytes) -> str:
+        uploaded.append((filename, data))
+        return "uploads/fake/note.txt"
+
+    monkeypatch.setattr(pipeline, "upload_upload", record_upload)
 
     chunks = asyncio.run(_collect(b"the quick brown fox", "note.txt"))
 
@@ -173,23 +165,36 @@ def test_process_file_end_to_end(monkeypatch):
     assert any("正在生成摘要" in c for c in chunks)
     assert chunks[-1].startswith("## 📌 一句话核心摘要")
 
-    # Original file persisted under uploads/, summary under processed/.
-    assert (pipeline.UPLOADS_DIR / "note.txt").read_bytes() == b"the quick brown fox"
-    out_md = (pipeline.PROCESSED_DIR / "note.md").read_text(encoding="utf-8")
-    assert "这是一份关于示例文档的核心摘要。" in out_md
+    # Original bytes uploaded to OBS exactly once; nothing written locally.
+    assert uploaded == [("note.txt", b"the quick brown fox")]
+
+
+def test_process_file_upload_failure_surfaces_error(monkeypatch):
+    """An OBS upload error becomes a readable message; summarization is skipped."""
+    async def fail_upload(filename: str, data: bytes) -> str:
+        raise RuntimeError("obs down")
+
+    async def fail_ingest(_):  # pragma: no cover — must not run
+        raise AssertionError("ingest should not run when upload fails")
+
+    monkeypatch.setattr(pipeline, "upload_upload", fail_upload)
+    monkeypatch.setattr(pipeline, "ingest_agent_run", fail_ingest)
+
+    chunks = asyncio.run(_collect(b"the quick brown fox", "note.txt"))
+    assert any("保存到对象存储失败" in c for c in chunks)
+    assert any("obs down" in c for c in chunks)
 
 
 def test_process_file_empty_text_short_circuits(monkeypatch):
     """When no text can be extracted, the pipeline says so and skips summary."""
     async def fail_ingest(_):
         raise AssertionError("ingest should not run on empty text")
+
     monkeypatch.setattr(pipeline, "ingest_agent_run", fail_ingest)
 
     chunks = asyncio.run(_collect(b"   ", "blank.txt"))
     joined = "".join(chunks)
     assert "未能从文件中提取出文本" in joined
-    # No summary written.
-    assert not (pipeline.PROCESSED_DIR / "blank.md").exists()
 
 
 def test_process_file_empty_bytes_raises():

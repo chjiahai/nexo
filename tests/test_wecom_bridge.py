@@ -56,6 +56,11 @@ def _file_frame(body_extra: dict | None = None) -> dict:
     return {"cmd": "aibot_msg_callback", "headers": {"req_id": "req-123"}, "body": body}
 
 
+def _image_frame(url: str = "https://i/p.png", aeskey: str = "img-key=", **extra) -> dict:
+    body = {"msgtype": "image", "image": {"url": url, "aeskey": aeskey}, **extra}
+    return {"cmd": "aibot_msg_callback", "headers": {"req_id": "req-123"}, "body": body}
+
+
 @pytest.fixture(autouse=True)
 def _clear_sessions():
     app._sessions.clear()
@@ -105,27 +110,34 @@ def test_filename_from_frame_falls_back_to_msgid():
     assert wecom._filename_from_frame(frame) == "mid-1"
 
 
-def test_file_url_from_frame_returns_url():
+def test_media_field_file_kind_returns_url():
     frame = _file_frame({"file": {"filename": "report.pdf", "url": "https://x/y"}})
-    assert wecom._file_url_from_frame(frame) == "https://x/y"
+    assert wecom._media_field(frame, "url", "file") == "https://x/y"
 
 
-def test_file_url_from_frame_missing_is_empty():
+def test_media_field_missing_is_empty():
     """No url in the file payload -> empty string (pipeline surfaces a clear error)."""
     frame = {"body": {"msgtype": "file", "file": {"filename": "a.pdf"}}}
-    assert wecom._file_url_from_frame(frame) == ""
-    assert wecom._file_url_from_frame({}) == ""
+    assert wecom._media_field(frame, "url", "file") == ""
+    assert wecom._media_field({}, "url", "file") == ""
 
 
-def test_file_aeskey_from_frame_returns_key():
+def test_media_aeskey_file_kind_returns_key():
     frame = _file_frame({"file": {"url": "https://x/y", "aeskey": "base64key=="}})
-    assert wecom._file_aeskey_from_frame(frame) == "base64key=="
+    assert wecom._media_aeskey(frame, "file") == "base64key=="
 
 
-def test_file_aeskey_from_frame_missing_is_empty():
+def test_media_aeskey_missing_is_empty():
     """No aeskey -> empty; without it the downloaded bytes stay encrypted."""
-    assert wecom._file_aeskey_from_frame(_file_frame()) == ""
-    assert wecom._file_aeskey_from_frame({}) == ""
+    assert wecom._media_aeskey(_file_frame(), "file") == ""
+    assert wecom._media_aeskey({}, "file") == ""
+
+
+def test_media_field_image_kind_reads_body_image():
+    """Image payloads live under body.image.{url,aeskey} — same shape as files."""
+    frame = {"body": {"msgtype": "image", "image": {"url": "https://i/p", "aeskey": "k="}}}
+    assert wecom._media_field(frame, "url", "image") == "https://i/p"
+    assert wecom._media_aeskey(frame, "image") == "k="
 
 
 def test_reply_streamed_streams_and_finishes():
@@ -276,14 +288,17 @@ def test_register_handlers_wires_events():
     assert stub.listeners("event.enter_chat")
 
 
-def test_image_message_replies_not_supported():
-    """An image (no OCR) gets a clear 'not supported' reply, not silence."""
+def test_image_message_downloads_and_delegates(monkeypatch):
+    """An image is downloaded via the SDK, then handed to handle_image (which
+    stores it). No more silent 'not supported' rejection."""
     from pyee.asyncio import AsyncIOEventEmitter
 
     class EmitterClient(AsyncIOEventEmitter):
-        def __init__(self):
+        def __init__(self, downloads=None) -> None:
             super().__init__()
             self.stream_calls: list[tuple[str, str, bool]] = []
+            self.download_calls: list[tuple[str, str]] = []
+            self.downloads = downloads if downloads is not None else []
 
         async def reply_stream(self, frame, stream_id, content, finish=False, **_):
             self.stream_calls.append((stream_id, content, finish))
@@ -291,9 +306,25 @@ def test_image_message_replies_not_supported():
         async def reply_welcome(self, frame, body):
             pass
 
-    fake = EmitterClient()
+        async def download_file(self, url, aes_key=None):
+            self.download_calls.append((url, aes_key))
+            if not self.downloads:
+                raise AssertionError("no fake download queued")
+            return self.downloads.pop(0)
+
+    fake = EmitterClient(downloads=[(b"\x89PNG-bytes", None)])
     wecom.register_handlers(fake)
-    frame = _text_frame("hi", body_extra={"chatid": "group-1", "msgtype": "image"})
+
+    captured: dict = {}
+
+    async def fake_handle_image(session_id, image_data):
+        captured.update(session_id=session_id, image_data=image_data)
+        yield "（图片已收到，已保存到对象存储。）"
+
+    monkeypatch.setattr(wecom, "handle_image", fake_handle_image)
+
+    frame = _image_frame(url="https://i/p.png", aeskey="img-key=",
+                         chatid="group-1")
 
     async def _go():
         # emit() is sync; it schedules the async handler on this loop. Yield
@@ -303,11 +334,75 @@ def test_image_message_replies_not_supported():
 
     asyncio.run(_go())
 
+    # Image downloaded with the frame's url + aeskey, then handed to handle_image.
+    assert fake.download_calls == [("https://i/p.png", "img-key=")]
+    assert captured["image_data"] == b"\x89PNG-bytes"
     contents = [c for _, c, _ in fake.stream_calls]
     assert contents, "expected a reply for image messages"
-    assert "图片消息暂不支持" in contents[-1]
+    assert "图片已收到" in contents[-1]
     # Last frame is the finish frame.
     assert fake.stream_calls[-1][2] is True
+
+
+def test_stream_image_downloads_and_delegates(monkeypatch):
+    """_stream_image: SDK download+decrypt yields plaintext bytes, then hands off
+    to handle_image."""
+    fake = FakeWSClient()
+    fake.downloads = [(b"png-bytes", None)]
+
+    captured: dict = {}
+
+    async def fake_handle(session_id, image_data):
+        captured.update(session_id=session_id, image_data=image_data)
+        yield "ok:saved"
+
+    monkeypatch.setattr(wecom, "handle_image", fake_handle)
+
+    async def gen():
+        async for c in wecom._stream_image(fake, "wecom:u1", "https://i/p", "k"):
+            yield c
+
+    chunks = asyncio.run(_collect(gen()))
+
+    # SDK download called with url + aes_key.
+    assert fake.download_calls == [("https://i/p", "k")]
+    # handle_image got the decrypted bytes.
+    assert captured["image_data"] == b"png-bytes"
+    assert captured["session_id"] == "wecom:u1"
+    # Progress + delegated chunk streamed out.
+    assert chunks[0] == "正在接收图片…"
+    assert chunks[-1] == "ok:saved"
+
+
+def test_stream_image_empty_url_yields_error():
+    """No download URL -> a clear user-facing message, no SDK call."""
+    fake = FakeWSClient()
+
+    async def gen():
+        async for c in wecom._stream_image(fake, "wecom:u1", "", "k"):
+            yield c
+
+    chunks = asyncio.run(_collect(gen()))
+    assert fake.downloads == []
+    assert "下载链接为空" in chunks[-1]
+
+
+def test_stream_image_download_failure_surfaces_error(monkeypatch):
+    """A download/decrypt error becomes a readable message, not a crash."""
+    fake = FakeWSClient(downloads=RuntimeError("bad aeskey"))
+
+    async def fail_handle(*a, **k):  # pragma: no cover — must not run
+        yield "should not reach"
+
+    monkeypatch.setattr(wecom, "handle_image", fail_handle)
+
+    async def gen():
+        async for c in wecom._stream_image(fake, "wecom:u1", "https://i/p", "k"):
+            yield c
+
+    chunks = asyncio.run(_collect(gen()))
+    assert "下载失败" in chunks[-1]
+    assert "bad aeskey" in chunks[-1]
 
 
 def test_stream_file_downloads_and_delegates(monkeypatch):

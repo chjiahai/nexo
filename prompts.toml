@@ -55,14 +55,21 @@ thinking = "正在思考…"
 no_reply = "（无回复）"
 no_keywords = "（无）"
 
-# File pipeline progress / errors.
+# File pipeline progress / errors. Original bytes are uploaded to OBS (not
+# written locally); the summary is only shown in the bubble, never persisted.
 file_empty_url = "（文件下载链接为空，无法处理）"
 file_downloading = "正在下载文件…"
 file_download_failed = "（下载失败：{error}）"
-file_parsing = "已下载到 data/uploads/{name}，正在解析…"
+file_parsing = "已下载 {name}，正在解析…"
 file_extract_empty = "（未能从文件中提取出文本，可能为扫描件/图片型 PDF，暂不支持）"
 file_summarizing = "已解析，正在生成摘要…"
+file_save_failed = "（保存到对象存储失败：{error}）"
 file_handle_failed = "（处理失败：{error}）"
 
-# Images: no OCR in the pipeline — tell the user what IS supported.
-image_not_supported = "（图片消息暂不支持。请发送文字与我对话，或发送 Word/PDF 文档，我会为您生成摘要。）"
+# Image pipeline progress / errors. Images are stored to OBS (no OCR/vision yet).
+image_empty_url = "（图片下载链接为空，无法处理）"
+image_downloading = "正在接收图片…"
+image_download_failed = "（图片下载失败：{error}）"
+image_saving = "正在保存图片…"
+image_saved = "（图片已收到，已保存到对象存储。）"
+image_save_failed = "（图片保存失败：{error}）"

@@ -5,8 +5,9 @@ wss://openws.work.weixin.qq.com. This module owns that connection and
 bridges it to the application layer, dispatching by WeCom message type
 (deterministic routing — no router agent):
 
-    message.text ──> app.handle_text  ──> chat_agent (streamed)
-    message.file ──> app.handle_file  ──> documents pipeline (download+parse+summarize)
+    message.text  ──> app.handle_text   ──> chat_agent (streamed)
+    message.file  ──> app.handle_file   ──> documents pipeline (download+parse+summarize)
+    message.image ──> app.handle_image  ──> OBS storage + ack (download+decrypt here)
 
 Each handler streams the reply back via `reply_stream` (finish=False per
 chunk, finish=True at end). This is a transport adapter in the API layer —
@@ -24,7 +25,7 @@ from typing import Any
 import logfire
 from aibot import WSClient, WSClientOptions, generate_req_id
 
-from nexo.app import handle_file, handle_text
+from nexo.app import handle_file, handle_image, handle_text
 from nexo.config import WECHAT_BOT_ID, WECHAT_BOT_SECRET
 from nexo.prompts import msg
 
@@ -59,29 +60,30 @@ def _filename_from_frame(frame: dict[str, Any]) -> str:
     return body.get("msgid", "unknown-file")
 
 
-def _file_url_from_frame(frame: dict[str, Any]) -> str:
-    """Extract the download URL from a `message.file` frame.
+def _media_field(frame: dict[str, Any], field: str, kind: str = "file") -> str:
+    """Extract a single field from a media payload in the frame.
 
-    The WeCom file payload carries the link under `body.file.url` (confirmed
-    shape in tests/test_wecom_bridge.py). Returns "" if absent — the caller
-    then surfaces a clear error to the user.
+    Files carry their payload under `body.file`; images under `body.image`
+    (same encrypted shape — url + aeskey). `field` is the key inside that
+    payload (e.g. "url", "filename"). Returns "" if absent — the caller then
+    surfaces a clear error to the user.
     """
     body = frame.get("body", {}) or {}
-    file_obj = body.get("file") or {}
-    url = file_obj.get("url")
-    return str(url) if url else ""
+    payload = body.get(kind) or {}
+    val = payload.get(field)
+    return str(val) if val else ""
 
 
-def _file_aeskey_from_frame(frame: dict[str, Any]) -> str:
-    """Extract the AES key for decrypting a `message.file` payload.
+def _media_aeskey(frame: dict[str, Any], kind: str = "file") -> str:
+    """Extract the AES key for decrypting a media payload (file or image).
 
-    WeCom file URLs serve AES-256-CBC-encrypted ciphertext; the Base64 key
-    rides in `body.file.aeskey`. Without it the downloaded bytes are gibberish.
-    Returns "" if absent (download will then return raw, unusable bytes).
+    WeCom media URLs serve AES-256-CBC-encrypted ciphertext; the Base64 key
+    rides in `body.<kind>.aeskey` (some payloads spell it `aes_key`). Without
+    it the downloaded bytes are gibberish. Returns "" if absent.
     """
     body = frame.get("body", {}) or {}
-    file_obj = body.get("file") or {}
-    aeskey = file_obj.get("aeskey") or file_obj.get("aes_key")
+    payload = body.get(kind) or {}
+    aeskey = payload.get("aeskey") or payload.get("aes_key")
     return str(aeskey) if aeskey else ""
 
 
@@ -243,8 +245,8 @@ def register_handlers(ws_client: WSClient) -> None:
     async def _on_file(frame: dict[str, Any]) -> None:
         session_id = _session_id_from_frame(frame)
         filename = _filename_from_frame(frame)
-        file_url = _file_url_from_frame(frame)
-        aes_key = _file_aeskey_from_frame(frame)
+        file_url = _media_field(frame, "url", "file")
+        aes_key = _media_aeskey(frame, "file")
         with logfire.span("WeCom file processing", session_id=session_id, filename=filename):
             logger.info("WeCom file from %s: %s", session_id, filename)
             await _reply_streamed(
@@ -256,15 +258,18 @@ def register_handlers(ws_client: WSClient) -> None:
     @ws_client.on("message.image")
     async def _on_image(frame: dict[str, Any]) -> None:
         # Images arrive as msgtype=image with image.{url,aeskey} (same encrypted
-        # shape as files), but the pipeline has no OCR — acknowledge clearly
-        # instead of silently dropping the message.
+        # shape as files). Download via the SDK, persist to OBS, acknowledge —
+        # no OCR/vision yet, but storage is the first step toward multimodal.
         session_id = _session_id_from_frame(frame)
-        logger.info("WeCom image from %s (unsupported, no OCR)", session_id)
-
-        async def _reply() -> AsyncIterator[str]:
-            yield msg("image_not_supported")
-
-        await _reply_streamed(ws_client, frame, _reply())
+        file_url = _media_field(frame, "url", "image")
+        aes_key = _media_aeskey(frame, "image")
+        with logfire.span("WeCom image processing", session_id=session_id):
+            logger.info("WeCom image from %s", session_id)
+            await _reply_streamed(
+                ws_client, frame,
+                _stream_image(ws_client, session_id, file_url, aes_key),
+                accumulate=False,
+            )
 
     @ws_client.on("event.enter_chat")
     async def _on_enter_chat(frame: dict[str, Any]) -> None:
@@ -301,6 +306,34 @@ async def _stream_file(
     # is often just a WeCom-assigned hash.
     name = real_name or filename or "unnamed"
     async for chunk in handle_file(session_id, name, file_data):
+        yield chunk
+
+
+async def _stream_image(
+    ws_client: WSClient,
+    session_id: str,
+    file_url: str,
+    aes_key: str,
+) -> AsyncIterator[str]:
+    """Download + decrypt an image via the SDK, then delegate to the app layer.
+
+    Mirrors `_stream_file`: download and AES decryption are SDK wire-protocol
+    concerns, so they live in this transport adapter; the app/storage layer
+    only ever sees plaintext bytes. The download returns `(data, real_name)`;
+    for images the name is unused. Yields progress chunks for the WeCom bubble.
+    """
+    if not file_url:
+        yield msg("image_empty_url")
+        return
+
+    yield msg("image_downloading")
+    try:
+        image_data, _ = await ws_client.download_file(file_url, aes_key)
+    except Exception as exc:  # noqa: BLE001 — tell the user, don't hang the bubble
+        yield msg("image_download_failed", error=exc)
+        return
+
+    async for chunk in handle_image(session_id, image_data):
         yield chunk
 
 

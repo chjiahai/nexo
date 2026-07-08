@@ -1,8 +1,8 @@
 """Ingest agent: raw document text -> structured summary.
 
 Single-agent pattern: one role, one system prompt, one structured output type.
-The output schema (`IngestResult`) mirrors the summary template rendered to
-`data/processed/<stem>.md` by `nexo.documents.pipeline._format_markdown`.
+The output schema (`IngestResult`) mirrors the summary template rendered (as
+the WeCom reply) by `nexo.documents.pipeline._format_markdown`.
 """
 
 from __future__ import annotations

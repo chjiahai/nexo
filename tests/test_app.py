@@ -103,8 +103,40 @@ def test_handle_file_wraps_pipeline_errors(monkeypatch):
     assert "boom" in out
 
 
+def test_handle_image_stores_and_acks(monkeypatch):
+    """handle_image uploads the image to OBS and replies with the saved message."""
+    uploaded: list[bytes] = []
+
+    async def fake_upload(data: bytes) -> str:
+        uploaded.append(data)
+        return "images/fake/key"
+
+    monkeypatch.setattr("nexo.storage.obs.upload_image", fake_upload)
+    out = asyncio.run(_collect_image("s7", b"\x89PNG\r\n\x1a\n..."))
+    assert uploaded == [b"\x89PNG\r\n\x1a\n..."]
+    assert "图片已收到" in out
+
+
+def test_handle_image_wraps_upload_errors(monkeypatch):
+    """An OBS upload failure becomes a friendly Chinese message, not a crash."""
+    async def boom(data: bytes) -> str:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("nexo.storage.obs.upload_image", boom)
+    out = asyncio.run(_collect_image("s7", b"x"))
+    assert "图片保存失败" in out
+    assert "boom" in out
+
+
 async def _collect_file(session_id: str, filename: str, file_data: bytes) -> str:
     chunks: list[str] = []
     async for chunk in app.handle_file(session_id, filename, file_data):
+        chunks.append(chunk)
+    return "".join(chunks)
+
+
+async def _collect_image(session_id: str, image_data: bytes) -> str:
+    chunks: list[str] = []
+    async for chunk in app.handle_image(session_id, image_data):
         chunks.append(chunk)
     return "".join(chunks)

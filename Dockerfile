@@ -47,8 +47,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Pre-create data dirs owned by appuser (the bind-mount overlays these).
-RUN mkdir -p /app/data/uploads /app/data/processed /app/data/index && \
+# Pre-create the data dir owned by appuser (the bind-mount overlays this).
+# Only `data/.heartbeat` is written here now (Docker healthcheck) — uploads
+# live in OBS, not on local disk.
+RUN mkdir -p /app/data && \
     chown -R appuser:appgroup /app
 
 USER appuser
