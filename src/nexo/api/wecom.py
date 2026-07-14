@@ -6,8 +6,8 @@ bridges it to the application layer, dispatching by WeCom message type
 (deterministic routing — no router agent):
 
     message.text  ──> app.handle_text   ──> chat_agent (streamed)
-    message.file  ──> app.handle_file   ──> documents pipeline (download+parse+summarize)
-    message.image ──> app.handle_image  ──> OBS storage + ack (download+decrypt here)
+    message.file  ──> app.handle_file   ──> TOS storage + ack (download+decrypt here)
+    message.image ──> app.handle_image  ──> TOS storage + ack (download+decrypt here)
 
 Each handler streams the reply back via `reply_stream` (finish=False per
 chunk, finish=True at end). This is a transport adapter in the API layer —
@@ -22,7 +22,6 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-import logfire
 from aibot import WSClient, WSClientOptions, generate_req_id
 
 from nexo.app import handle_file, handle_image, handle_text
@@ -144,10 +143,10 @@ async def _reply_streamed(
     - accumulate=True (chat): each frame carries the GROWING accumulated text,
       so the streamed reply reads like a growing prefix. The finish frame carries
       the full reply.
-    - accumulate=False (file pipeline): each chunk REPLACES the previous one, so
-      the staged progress messages ("正在下载…" -> "正在解析…" -> "正在生成摘要…")
-      show transiently and are wiped when the next stage appears. The final
-      summary chunk replaces all progress, exactly like a chat reply.
+    - accumulate=False (file/image route): each chunk REPLACES the previous one,
+      so the staged progress messages ("正在下载…" -> "正在保存…") show transiently
+      and are wiped when the next stage appears. The final chunk replaces all
+      progress, exactly like a chat reply.
 
     On error, send a finish frame preserving whatever was last shown.
     """
@@ -167,15 +166,63 @@ async def _reply_streamed(
 
         if accumulate:
             pending = 0  # bytes accumulated since the last flush
-            async for chunk in chunks:
-                full.append(chunk)
-                pending += len(chunk)
-                if pending >= _FLUSH_BYTES:
-                    text = "".join(full)
-                    if text != last_content:
-                        await _send(text, finish=False)
-                        last_content = text
-                    pending = 0
+            queue: asyncio.Queue = asyncio.Queue()
+            eos = object()  # end-of-stream sentinel pushed by the pump
+
+            async def _pump() -> None:
+                # Own the chunks generator's lifetime so a slow producer is never
+                # cancelled: timeouts fire on queue.get() (safe to cancel) rather
+                # than on __anext__ — cancelling __anext__ closes the async
+                # generator and loses the rest of the stream.
+                try:
+                    async for chunk in chunks:
+                        await queue.put(chunk)
+                except Exception as exc:  # surface producer errors to the consumer
+                    await queue.put(exc)
+                finally:
+                    await queue.put(eos)
+
+            pump = asyncio.create_task(_pump())
+            try:
+                while True:
+                    try:
+                        item = await asyncio.wait_for(
+                            queue.get(), timeout=_FLUSH_INTERVAL
+                        )
+                    except asyncio.TimeoutError:
+                        # Time-based flush: surface accumulated bytes before they
+                        # reach _FLUSH_BYTES, so a slow-streaming model doesn't
+                        # leave the bubble stuck on the previous frame.
+                        if pending > 0:
+                            text = "".join(full)
+                            if text != last_content:
+                                await _send(text, finish=False)
+                                last_content = text
+                            pending = 0
+                        continue
+                    if item is eos:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    full.append(item)
+                    pending += len(item)
+                    if pending >= _FLUSH_BYTES:
+                        text = "".join(full)
+                        if text != last_content:
+                            await _send(text, finish=False)
+                            last_content = text
+                        pending = 0
+            finally:
+                # If the consumer exited early (e.g. _send failed), stop the pump
+                # so it doesn't leak; otherwise it has already finished. Swallow
+                # whatever the cancelled pump raises so it can't mask the
+                # exception already propagating from the consumer.
+                if not pump.done():
+                    pump.cancel()
+                    try:
+                        await pump
+                    except BaseException:  # noqa: BLE001 — see comment above
+                        pass
             last_content = "".join(full) or msg("no_reply")
         else:
             # Each chunk stands alone as the full bubble; WeCom replaces, so the
@@ -234,12 +281,8 @@ def register_handlers(ws_client: WSClient) -> None:
     async def _on_text(frame: dict[str, Any]) -> None:
         text = _user_text(frame)
         session_id = _session_id_from_frame(frame)
-        # One span covers receipt -> agent run -> LLM call so the whole turn
-        # lands in a single trace (the "WeCom text from..." log and the
-        # pydantic-ai agent span become children of this span).
-        with logfire.span("WeCom text reply", session_id=session_id, text=text):
-            logger.info("WeCom text from %s: %s", session_id, text)
-            await _reply_streamed(ws_client, frame, handle_text(session_id, text))
+        logger.info("WeCom text from %s: %s", session_id, text)
+        await _reply_streamed(ws_client, frame, handle_text(session_id, text))
 
     @ws_client.on("message.file")
     async def _on_file(frame: dict[str, Any]) -> None:
@@ -247,29 +290,27 @@ def register_handlers(ws_client: WSClient) -> None:
         filename = _filename_from_frame(frame)
         file_url = _media_field(frame, "url", "file")
         aes_key = _media_aeskey(frame, "file")
-        with logfire.span("WeCom file processing", session_id=session_id, filename=filename):
-            logger.info("WeCom file from %s: %s", session_id, filename)
-            await _reply_streamed(
-                ws_client, frame,
-                _stream_file(ws_client, session_id, filename, file_url, aes_key),
-                accumulate=False,
-            )
+        logger.info("WeCom file from %s: %s", session_id, filename)
+        await _reply_streamed(
+            ws_client, frame,
+            _stream_file(ws_client, session_id, filename, file_url, aes_key),
+            accumulate=False,
+        )
 
     @ws_client.on("message.image")
     async def _on_image(frame: dict[str, Any]) -> None:
         # Images arrive as msgtype=image with image.{url,aeskey} (same encrypted
-        # shape as files). Download via the SDK, persist to OBS, acknowledge —
+        # shape as files). Download via the SDK, persist to TOS, acknowledge —
         # no OCR/vision yet, but storage is the first step toward multimodal.
         session_id = _session_id_from_frame(frame)
         file_url = _media_field(frame, "url", "image")
         aes_key = _media_aeskey(frame, "image")
-        with logfire.span("WeCom image processing", session_id=session_id):
-            logger.info("WeCom image from %s", session_id)
-            await _reply_streamed(
-                ws_client, frame,
-                _stream_image(ws_client, session_id, file_url, aes_key),
-                accumulate=False,
-            )
+        logger.info("WeCom image from %s", session_id)
+        await _reply_streamed(
+            ws_client, frame,
+            _stream_image(ws_client, session_id, file_url, aes_key),
+            accumulate=False,
+        )
 
     @ws_client.on("event.enter_chat")
     async def _on_enter_chat(frame: dict[str, Any]) -> None:
@@ -288,7 +329,7 @@ async def _stream_file(
     """Download + decrypt the file via the SDK, then delegate to the app layer.
 
     Download and AES decryption are SDK wire-protocol concerns, so they live in
-    this transport adapter; the app/pipeline layer only ever sees plaintext
+    this transport adapter; the app/storage layer only ever sees plaintext
     bytes. Yields progress chunks for the WeCom bubble.
     """
     if not file_url:
@@ -355,7 +396,7 @@ def build_client() -> WSClient:
 async def run() -> None:
     """Connect to WeCom and serve until interrupted."""
     # Logging is configured by `nexo.observability.configure()` (called from
-    # the CLI), which bridges stdlib logging into logfire/OTel — no basicConfig here.
+    # the CLI) — no basicConfig here.
     from nexo.observability import start_heartbeat_loop
 
     ws_client = build_client()

@@ -12,7 +12,6 @@ import pytest
 
 from nexo.prompts import (
     CHAT_SYSTEM_PROMPT,
-    INGEST_SYSTEM_PROMPT,
     msg,
 )
 
@@ -20,15 +19,6 @@ from nexo.prompts import (
 def test_chat_system_prompt_is_nonempty():
     assert CHAT_SYSTEM_PROMPT.strip()
     assert "Nexo" in CHAT_SYSTEM_PROMPT
-
-
-def test_ingest_system_prompt_is_nonempty():
-    assert INGEST_SYSTEM_PROMPT.strip()
-    # The new prompt drives the summary template — it must mention the key
-    # contract terms (faithfulness + the core-summary length cap).
-    assert "忠于" in INGEST_SYSTEM_PROMPT
-    assert "core_summary" in INGEST_SYSTEM_PROMPT
-    assert "500" in INGEST_SYSTEM_PROMPT
 
 
 def test_msg_returns_plain_string_without_placeholders():
@@ -39,8 +29,8 @@ def test_msg_returns_plain_string_without_placeholders():
 def test_msg_formats_placeholders():
     out = msg("file_download_failed", error="bad aeskey")
     assert out == "（下载失败：bad aeskey）"
-    out2 = msg("file_parsing", name="report.pdf")
-    assert out2 == "已下载 report.pdf，正在解析…"
+    out2 = msg("file_save_failed", error="tos down")
+    assert out2 == "（保存到对象存储失败：tos down）"
 
 
 def test_msg_raises_on_unknown_key():

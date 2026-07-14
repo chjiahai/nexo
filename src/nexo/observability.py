@@ -1,34 +1,20 @@
-"""Observability: logfire + OpenTelemetry, plus process-liveness heartbeat.
+"""Process-liveness heartbeat + stdlib logging setup.
 
-logfire (built on the OpenTelemetry SDK) takes over logging and tracing:
-- stdlib `logger.info(...)` calls are bridged into OTel via `LogfireLoggingHandler`,
-  so existing `wecom.py` logging is unchanged — same calls, now flowing into the
-  same observability pipeline.
-- pydantic-ai agent runs and httpx (DeepSeek) calls are auto-instrumented, giving
-  full traces of the message -> download -> parse -> LLM -> reply chain with zero
-  manual span code.
+The bot is an outbound WebSocket client with no listening port, so we write a
+heartbeat file while the WS is connected and `nexo health` checks its freshness
+— that becomes the Docker healthcheck.
 
-Liveness is separate from logfire: the bot is an outbound WebSocket client with no
-listening port, so we write a heartbeat file and `nexo health` checks its
-freshness — that becomes the Docker healthcheck.
-
-Two modes, switched by `NEXO_OTEL_ENDPOINT`:
-- empty  -> Phase 1 local mode (rich console only, nothing leaves the process)
-- set    -> Phase 2: export traces/metrics via OTLP/HTTP to a self-hosted backend
-            (e.g. grafana/otel-lgtm).
+`configure()` sets up stdlib logging (level INFO to stderr). Call it once at
+bot startup.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 import time
 from collections.abc import Callable
-
-import logfire
-from logfire import ConsoleOptions
 
 from nexo.config import DATA_DIR
 
@@ -42,59 +28,13 @@ _HEALTH_MAX_AGE = 90  # seconds; heartbeat staler than this = unhealthy
 
 
 def configure() -> None:
-    """Initialize logfire + OTel instrumentation. Call once at bot startup."""
-    otel_endpoint = os.getenv("NEXO_OTEL_ENDPOINT", "").strip()
+    """Initialize stdlib logging. Call once at bot startup.
 
-    # Route logfire's rich console to STDERR (line-buffered by default), not
-    # stdout. stdout is block-buffered when not a TTY (Docker logs, pipe
-    # capture), which would sit on the buffer until process exit — invisible in
-    # a long-running bot. The SDK's own logs already go to stderr; match that.
-    console = ConsoleOptions(output=sys.stderr)
-
-    if otel_endpoint:
-        # Phase 2 — export traces + metrics to a self-hosted OTel backend.
-        logfire.configure(
-            send_to_logfire=False,
-            service_name="nexo",
-            console=console,
-            additional_span_processors=[_otlp_span_processor(otel_endpoint)],
-            metrics=logfire.MetricsOptions(
-                additional_readers=[_otlp_metric_reader(otel_endpoint)]
-            ),
-        )
-        logger.info("OTel export enabled -> %s", otel_endpoint)
-    else:
-        # Phase 1 — local mode: rich console output, nothing leaves the process.
-        logfire.configure(send_to_logfire=False, service_name="nexo", console=console)
-
-    # Match the old `basicConfig(level=INFO)` behavior: let stdlib INFO records
-    # through (the LogfireLoggingHandler doesn't filter on level itself).
-    logging.getLogger().setLevel(logging.INFO)
-
-    # Bridge stdlib logging into logfire/OTel. Existing logger.info() calls
-    # (wecom.py etc.) now flow into the same pipeline, unchanged.
-    logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
-
-    # Auto-trace pydantic-ai: agent runs, LLM calls, tool calls, validation, retries.
-    logfire.instrument_pydantic_ai()
-    # Auto-trace DeepSeek's httpx calls — closes the "API failure untracked" gap.
-    logfire.instrument_httpx()
-
-
-def _otlp_span_processor(endpoint: str):
-    """Build a BatchSpanProcessor exporting to `<endpoint>/v1/traces` (OTLP/HTTP)."""
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-    return BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
-
-
-def _otlp_metric_reader(endpoint: str):
-    """Build a metric reader exporting to `<endpoint>/v1/metrics` (OTLP/HTTP)."""
-    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-
-    return PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=f"{endpoint}/v1/metrics"))
+    Routes INFO-level logs to STDERR. STDERR is line-buffered by default; stdout
+    is block-buffered when not a TTY (Docker logs, pipe capture), which would sit
+    on the buffer until process exit — invisible in a long-running bot.
+    """
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
 
 # --- Liveness heartbeat ----------------------------------------------------

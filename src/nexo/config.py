@@ -22,8 +22,8 @@ load_dotenv(_ROOT / ".env")
 
 # --- Data directory --------------------------------------------------------
 # Used ONLY for the liveness heartbeat (`data/.heartbeat`, see observability).
-# User uploads are NOT written here anymore — they live in Huawei Cloud OBS
-# (see the OBS section below). Kept because the Docker healthcheck reads it.
+# User uploads are NOT written here anymore — they live in Volcengine TOS
+# (see the TOS section below). Kept because the Docker healthcheck reads it.
 DATA_DIR = _ROOT / "data"
 
 # --- Model (any OpenAI-compatible endpoint) -------------------------------
@@ -37,11 +37,12 @@ MODEL_NAME = os.getenv("NEXO_MODEL", "openai:gpt-4o-mini")
 WECHAT_BOT_ID = os.getenv("WECHAT_BOT_ID", "")
 WECHAT_BOT_SECRET = os.getenv("WECHAT_BOT_SECRET", "")
 
-# --- Huawei Cloud OBS (对象存储) -------------------------------------------
+# --- Volcengine TOS (火山引擎对象存储) -------------------------------------
 # Primary durable store for everything users upload (files + images). The bot
-# no longer persists upload content to local disk. Set ALL FOUR — the first
-# OBS call fails fast with a clear message if any is missing.
-OBS_ACCESS_KEY_ID = os.getenv("OBS_ACCESS_KEY_ID", "")
-OBS_SECRET_ACCESS_KEY = os.getenv("OBS_SECRET_ACCESS_KEY", "")
-OBS_ENDPOINT = os.getenv("OBS_ENDPOINT", "")  # full endpoint, incl. https:// + region
-OBS_BUCKET = os.getenv("OBS_BUCKET", "")
+# no longer persists upload content to local disk. Set ALL FIVE — the first
+# TOS call fails fast with a clear message if any is missing.
+TOS_ACCESS_KEY_ID = os.getenv("TOS_ACCESS_KEY_ID", "")
+TOS_SECRET_ACCESS_KEY = os.getenv("TOS_SECRET_ACCESS_KEY", "")
+TOS_ENDPOINT = os.getenv("TOS_ENDPOINT", "")  # e.g. tos-cn-beijing.volces.com (no bucket, no https://)
+TOS_REGION = os.getenv("TOS_REGION", "")  # e.g. cn-beijing
+TOS_BUCKET = os.getenv("TOS_BUCKET", "")

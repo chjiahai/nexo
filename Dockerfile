@@ -49,7 +49,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 # Pre-create the data dir owned by appuser (the bind-mount overlays this).
 # Only `data/.heartbeat` is written here now (Docker healthcheck) — uploads
-# live in OBS, not on local disk.
+# live in TOS, not on local disk.
 RUN mkdir -p /app/data && \
     chown -R appuser:appgroup /app
 

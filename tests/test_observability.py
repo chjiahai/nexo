@@ -1,8 +1,7 @@
-"""Tests for observability: heartbeat liveness + logfire configure.
+"""Tests for the liveness heartbeat.
 
-Hermetic: heartbeat file is redirected to tmp_path so the real data/ tree is
-never touched. `configure()` is exercised to ensure it doesn't blow up on
-import/startup (it must not require a live OTel backend or a logfire token).
+Hermetic: the heartbeat file is redirected to tmp_path so the real data/ tree
+is never touched.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ import pytest
 
 from nexo.observability import (
     check_heartbeat,
-    configure,
     start_heartbeat_loop,
     touch_heartbeat,
 )
@@ -60,12 +58,6 @@ def test_check_heartbeat_respects_max_age():
     _HEARTBEAT_FILE.write_text(str(time.time() - 5), encoding="utf-8")
     assert check_heartbeat(max_age=1) is False
     assert check_heartbeat(max_age=10) is True
-
-
-def test_configure_does_not_raise():
-    """configure() must work in local mode (no token, no backend). Idempotent."""
-    configure()  # should not raise
-    configure()  # second call should also be safe
 
 
 def test_heartbeat_loop_touches_file_while_connected(monkeypatch):

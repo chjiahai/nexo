@@ -81,48 +81,52 @@ def test_reset_session_clears_history(test_model):
     assert "s5" not in app._sessions
 
 
-def test_handle_file_surfaces_pipeline_chunks(monkeypatch):
-    """handle_file streams whatever the documents pipeline yields."""
-    async def fake_process(file_data, filename, user_id):
-        yield f"fake:{filename}:{len(file_data)}"
+def test_handle_file_stores_and_acks(monkeypatch):
+    """handle_file uploads the file to TOS and replies with the saved message."""
+    uploaded: list[tuple[str, str, bytes]] = []
 
-    monkeypatch.setattr("nexo.documents.pipeline.process_file", fake_process)
+    async def fake_upload(user_id: str, filename: str, data: bytes) -> str:
+        uploaded.append((user_id, filename, data))
+        return "docs/fake/key"
+
+    monkeypatch.setattr("nexo.storage.tos.upload_upload", fake_upload)
     out = asyncio.run(_collect_file("s6", "report.pdf", b"hello"))
-    assert "fake:report.pdf:5" in out
+    assert uploaded == [("s6", "report.pdf", b"hello")]
+    assert "正在保存文件" in out
+    assert "已保存到对象存储" in out
 
 
-def test_handle_file_wraps_pipeline_errors(monkeypatch):
-    """A pipeline failure becomes a friendly Chinese message, not a crash."""
-    async def boom(file_data, filename, user_id):
+def test_handle_file_wraps_upload_errors(monkeypatch):
+    """A TOS upload failure becomes a friendly Chinese message, not a crash."""
+    async def boom(user_id: str, filename: str, data: bytes) -> str:
         raise RuntimeError("boom")
-        yield  # pragma: no cover — make it an async generator
 
-    monkeypatch.setattr("nexo.documents.pipeline.process_file", boom)
+    monkeypatch.setattr("nexo.storage.tos.upload_upload", boom)
     out = asyncio.run(_collect_file("s6", "report.pdf", b"hello"))
-    assert "处理失败" in out
+    assert "保存到对象存储失败" in out
     assert "boom" in out
 
 
 def test_handle_image_stores_and_acks(monkeypatch):
-    """handle_image uploads the image to OBS and replies with the saved message."""
+    """handle_image uploads the image to TOS and replies with the saved message."""
     uploaded: list[tuple[str, bytes]] = []
 
     async def fake_upload(user_id: str, data: bytes) -> str:
         uploaded.append((user_id, data))
         return "imgs/fake/key"
 
-    monkeypatch.setattr("nexo.storage.obs.upload_image", fake_upload)
+    monkeypatch.setattr("nexo.storage.tos.upload_image", fake_upload)
     out = asyncio.run(_collect_image("s7", b"\x89PNG\r\n\x1a\n..."))
     assert uploaded == [("s7", b"\x89PNG\r\n\x1a\n...")]
     assert "图片已收到" in out
 
 
 def test_handle_image_wraps_upload_errors(monkeypatch):
-    """An OBS upload failure becomes a friendly Chinese message, not a crash."""
+    """A TOS upload failure becomes a friendly Chinese message, not a crash."""
     async def boom(user_id: str, data: bytes) -> str:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("nexo.storage.obs.upload_image", boom)
+    monkeypatch.setattr("nexo.storage.tos.upload_image", boom)
     out = asyncio.run(_collect_image("s7", b"x"))
     assert "图片保存失败" in out
     assert "boom" in out

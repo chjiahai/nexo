@@ -189,6 +189,35 @@ def test_reply_streamed_sends_full_text_each_frame():
     assert contents[-1] == "AAAA" * 20 + "BBBB" * 20
 
 
+def test_reply_streamed_time_flushes_small_slow_chunks(monkeypatch):
+    """Small chunks under _FLUSH_BYTES still surface once _FLUSH_INTERVAL elapses,
+    so a slow model doesn't leave the bubble stuck on 'thinking'. Nothing is lost:
+    the finish frame carries the full concatenated text.
+
+    Guards the queue+pump design: timeouts must fire on queue.get() (safe to
+    cancel), never on the generator's __anext__ (which would close it)."""
+    monkeypatch.setattr(wecom, "_FLUSH_INTERVAL", 0.02)
+    fake = FakeWSClient()
+    frame = _text_frame("hi", body_extra={"chatid": "group-1"})
+
+    async def gen():
+        for tok in ("one ", "two ", "three"):
+            await asyncio.sleep(0.05)  # slower than the 0.02s interval
+            yield tok
+
+    asyncio.run(wecom._reply_streamed(fake, frame, gen()))
+
+    contents = [c for _, c, _ in fake.stream_calls]
+    # Each token is well under _FLUSH_BYTES(64); without time-flush the bubble
+    # would sit on 'thinking' until the finish frame. Here each prefix surfaces.
+    assert "one " in contents
+    assert "one two " in contents
+    assert "one two three" in contents
+    # Finish frame carries the full text — nothing dropped by the timeouts.
+    assert contents[-1] == "one two three"
+    assert fake.stream_calls[-1][2] is True
+
+
 def test_reply_streamed_sends_finish_on_error():
     """If the chunk generator raises, a finish frame is still sent so the bubble
     unblocks; any partial text is preserved alongside the error."""

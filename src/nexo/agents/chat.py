@@ -1,8 +1,6 @@
 """Minimal chat agent: text-in -> streamed text-out.
 
 The natural fit for a chat bot over WebSocket — streams raw text tokens.
-Contrast with `ingest.py`, which returns structured memory nodes (and is
-therefore not suited to streaming chat replies).
 """
 
 from __future__ import annotations

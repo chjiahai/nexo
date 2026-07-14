@@ -30,7 +30,6 @@ with _PROMPTS_FILE.open("rb") as _f:
 
 # --- Agent system prompts --------------------------------------------------
 CHAT_SYSTEM_PROMPT: str = _data["chat"]["system_prompt"].strip()
-INGEST_SYSTEM_PROMPT: str = _data["ingest"]["system_prompt"].strip()
 
 # --- User-facing message templates ----------------------------------------
 _MESSAGES: dict[str, str] = _data["messages"]

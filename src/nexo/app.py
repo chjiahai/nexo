@@ -6,8 +6,8 @@ request kind has its own `handle_*` entry point; the transport layer picks
 the right one based on the message type (e.g. WeCom `msgtype`):
 
     text  -> handle_text  -> chat_agent (streamed)      [live]
-    file  -> handle_file  -> documents pipeline         [live]
-    image -> handle_image -> OBS storage + ack          [live]
+    file  -> handle_file  -> TOS storage + ack          [live]
+    image -> handle_image -> TOS storage + ack          [live]
 
 This is the only layer that holds cross-turn state (session history, for the
 text route). It does not import any transport code.
@@ -44,34 +44,35 @@ async def handle_text(session_id: str, text: str) -> AsyncIterator[str]:
 
 
 async def handle_file(session_id: str, filename: str, file_data: bytes) -> AsyncIterator[str]:
-    """Handle an uploaded file: store original to OBS, extract text, summarize.
+    """Handle an uploaded file: store the original to TOS, then acknowledge.
 
     `file_data` is the already-downloaded-and-decrypted file content (the
-    transport layer handles download + AES decryption). Streams progress chunks
-    to the transport. The documents pipeline owns the heavy lifting; we wrap it
-    so a failure still yields a friendly Chinese message and the WeCom bubble
-    always receives a finish frame.
+    transport layer handles download + AES decryption). The file is persisted
+    to TOS under docs/<user_id>/; we reply with a short confirmation. No
+    parsing/summarization yet — storage is the first step toward a later
+    document-processing pipeline.
     """
-    from nexo.documents.pipeline import process_file  # lazy: avoid import overhead at bot startup
     from nexo.prompts import msg
+    from nexo.storage.tos import upload_upload
 
     try:
-        async for chunk in process_file(file_data, filename, session_id):
-            yield chunk
-    except Exception as exc:  # noqa: BLE001 — surface a readable message to the user
-        yield msg("file_handle_failed", error=exc)
+        yield msg("file_saving")
+        await upload_upload(session_id, filename, file_data)
+        yield msg("file_saved")
+    except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
+        yield msg("file_save_failed", error=exc)
 
 
 async def handle_image(session_id: str, image_data: bytes) -> AsyncIterator[str]:
-    """Handle an uploaded image: store it to OBS, then acknowledge.
+    """Handle an uploaded image: store it to TOS, then acknowledge.
 
     `image_data` is the already-downloaded-and-decrypted image bytes (the
     transport layer handles download + AES decryption). The image is persisted
-    to OBS under imgs/<user_id>/; we reply with a short confirmation. No
+    to TOS under imgs/<user_id>/; we reply with a short confirmation. No
     OCR/vision yet — storage is the first step toward a later multimodal pipeline.
     """
     from nexo.prompts import msg
-    from nexo.storage.obs import upload_image
+    from nexo.storage.tos import upload_image
 
     try:
         yield msg("image_saving")

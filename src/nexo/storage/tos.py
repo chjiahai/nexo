@@ -1,7 +1,7 @@
-"""Huawei Cloud OBS (对象存储) client for user uploads.
+"""Volcengine TOS (火山引擎对象存储) client for user uploads.
 
-`esdk-obs-python`'s `ObsClient` is synchronous (built on `requests`), while
-the bot is fully async. Every OBS call here is wrapped in `asyncio.to_thread`
+The `tos` SDK's `TosClientV2` is synchronous (built on `requests`), while
+the bot is fully async. Every TOS call here is wrapped in `asyncio.to_thread`
 so the event loop never blocks on a network round-trip. The client itself is
 built lazily once (module-level singleton) from config, mirroring how the
 WeCom client is constructed in `wecom.build_client`.
@@ -14,10 +14,9 @@ time-prefixed for ordering and collision avoidance:
 
 `<user_id>` is derived from the bot's session id (e.g. `wecom:2` -> `2`).
 The true original filename is preserved in object metadata
-(`x-obs-meta-original-name`) because the key is rewritten. Summaries are NOT
-stored here by design (they only surface as the WeCom reply text).
+(`x-tos-meta-original-name`) because the key is rewritten.
 
-API reference: https://support.huaweicloud.com/sdk-python-devg-obs/obs_22_0500.html
+API reference: https://www.volcengine.com/docs/6349
 """
 
 from __future__ import annotations
@@ -27,10 +26,11 @@ from datetime import datetime
 from pathlib import Path
 
 from nexo.config import (
-    OBS_ACCESS_KEY_ID,
-    OBS_BUCKET,
-    OBS_ENDPOINT,
-    OBS_SECRET_ACCESS_KEY,
+    TOS_ACCESS_KEY_ID,
+    TOS_BUCKET,
+    TOS_ENDPOINT,
+    TOS_REGION,
+    TOS_SECRET_ACCESS_KEY,
 )
 
 # Built once, on first use. `None` means "not yet built"; a missing-config
@@ -40,7 +40,7 @@ _client: object | None = None
 
 
 def _get_client() -> object:
-    """Return the lazily-built OBS singleton, or raise a clear config error."""
+    """Return the lazily-built TOS singleton, or raise a clear config error."""
     global _client
     if _client is not None:
         return _client
@@ -48,24 +48,26 @@ def _get_client() -> object:
     missing = [
         name
         for name, val in (
-            ("OBS_ACCESS_KEY_ID", OBS_ACCESS_KEY_ID),
-            ("OBS_SECRET_ACCESS_KEY", OBS_SECRET_ACCESS_KEY),
-            ("OBS_ENDPOINT", OBS_ENDPOINT),
-            ("OBS_BUCKET", OBS_BUCKET),
+            ("TOS_ACCESS_KEY_ID", TOS_ACCESS_KEY_ID),
+            ("TOS_SECRET_ACCESS_KEY", TOS_SECRET_ACCESS_KEY),
+            ("TOS_ENDPOINT", TOS_ENDPOINT),
+            ("TOS_REGION", TOS_REGION),
+            ("TOS_BUCKET", TOS_BUCKET),
         )
         if not val
     ]
     if missing:
         raise RuntimeError(
-            "OBS 配置缺失，请在 .env 设置：" + " / ".join(missing)
+            "TOS 配置缺失，请在 .env 设置：" + " / ".join(missing)
         )
 
-    from obs import ObsClient  # imported lazily so the SDK is optional at import time
+    from tos import TosClientV2  # imported lazily so the SDK is optional at import time
 
-    _client = ObsClient(
-        access_key_id=OBS_ACCESS_KEY_ID,
-        secret_access_key=OBS_SECRET_ACCESS_KEY,
-        server=OBS_ENDPOINT,
+    _client = TosClientV2(
+        ak=TOS_ACCESS_KEY_ID,
+        sk=TOS_SECRET_ACCESS_KEY,
+        endpoint=TOS_ENDPOINT,
+        region=TOS_REGION,
     )
     return _client
 
@@ -73,7 +75,7 @@ def _get_client() -> object:
 def _safe_name(name: str) -> str:
     """Strip any directory component (path-traversal guard); cap length.
 
-    OBS keys cap at 1024 bytes and UTF-8 Chinese filenames are multibyte, so
+    TOS keys cap at 1024 bytes and UTF-8 Chinese filenames are multibyte, so
     we trim an over-long stem while preserving the extension.
     """
     base = Path(name).name or "unnamed"
@@ -87,7 +89,7 @@ def _safe_name(name: str) -> str:
 
 
 def _safe_user_id(user_id: str) -> str:
-    """Normalize a session/user id into a path-safe OBS key segment.
+    """Normalize a session/user id into a path-safe TOS key segment.
 
     Session ids look like `wecom:<userid>` (single chat) or `wecom:<chatid>`
     (group). We drop the channel prefix to get the raw user/conversation id,
@@ -137,39 +139,43 @@ async def put_bytes(
     content_type: str | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
-    """Upload `data` to `key` and return the key. Raises on OBS error.
+    """Upload `data` to `key` and return the key. Raises on TOS error.
 
-    `content_type` is sent explicitly when given; otherwise OBS infers it from
-    the key's extension. `metadata` becomes `x-obs-meta-*` headers.
+    `content_type` is sent explicitly when given; otherwise TOS infers it from
+    the key's extension. `metadata` becomes `x-tos-meta-*` headers (passed to
+    the SDK as the `meta` parameter).
     """
     client = _get_client()
-    headers = {"contentType": content_type} if content_type else None
 
     def _do():
-        return client.putContent(  # type: ignore[union-attr]
-            OBS_BUCKET,
-            key,
+        return client.put_object(  # type: ignore[union-attr]
+            bucket=TOS_BUCKET,
+            key=key,
             content=data,
-            metadata=metadata,
-            headers=headers,
+            content_type=content_type,
+            meta=metadata,
         )
 
-    resp = await asyncio.to_thread(_do)
-    status = getattr(resp, "status", 0) or 0
+    try:
+        resp = await asyncio.to_thread(_do)
+    except Exception as exc:  # TosClientError / TosServerError from the `tos` SDK
+        raise RuntimeError(f"TOS 上传失败：{exc}") from exc
+
+    status = getattr(resp, "status_code", 0) or 0
+    # TOS returns 200 on a successful put_object; anything else is an error.
     if status >= 300:
-        code = getattr(resp, "errorCode", "") or ""
-        message = getattr(resp, "errorMessage", "") or ""
-        detail = f"OBS 上传失败 (status={status} {code})".rstrip()
+        code = getattr(resp, "code", "") or ""
+        message = getattr(resp, "message", "") or ""
+        detail = f"TOS 上传失败 (status={status} {code})".rstrip()
         if message:
             detail += f": {message}"
         if status == 404:
-            # OBS returns a bare 404 (no error code) when the bucket can't be
-            # found at this endpoint — almost always an endpoint/bucket
-            # mismatch. Make that legible instead of a cryptic empty error.
+            # TOS returns 404 (NoSuchBucket) when the bucket can't be found at
+            # this endpoint — almost always an endpoint/region/bucket mismatch.
             detail += (
-                "（404 通常是 bucket 在该 endpoint 下不存在：确认 OBS_ENDPOINT 是区域"
-                "端点如 obs.cn-south-1.myhuaweicloud.com，而不是含 bucket 名的 URL；"
-                "并核对 OBS_BUCKET 拼写与 bucket 所在区域）"
+                "（404 通常是 bucket 在该 endpoint 下不存在：确认 TOS_ENDPOINT 是区域"
+                "端点如 tos-cn-beijing.volces.com，而不是含 bucket 名的 URL；"
+                "并核对 TOS_REGION 与 endpoint 对应、TOS_BUCKET 拼写无误）"
             )
         raise RuntimeError(detail)
     return key

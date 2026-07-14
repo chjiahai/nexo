@@ -32,8 +32,8 @@ def _bot() -> int:
     from nexo.api.wecom import run as run_wecom
     from nexo.observability import configure
 
-    # Wire logfire + OTel instrumentation before anything else runs, so every
-    # subsequent log line and LLM call is captured.
+    # Set up stdlib logging before anything else runs, so every subsequent log
+    # line is captured.
     configure()
 
     try:

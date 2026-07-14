@@ -22,8 +22,6 @@ services:
     # connected — reflects real business liveness, unlike `nexo hello` (which
     # only proves the package imports). A dead link is also handled by
     # `restart: unless-stopped` above.
-    depends_on:
-      - otel-lgtm
     healthcheck:
       test: ["CMD", "nexo", "health"]
       interval: 30s
@@ -35,15 +33,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-  # OpenTelemetry backend — single container bundling Grafana + Loki + Tempo +
-  # Mimir + OTel Collector. Enable export by setting NEXO_OTEL_ENDPOINT in .env
-  # (e.g. http://otel-lgtm:4318). Left running even if export is off, since it's
-  # harmless and keeps `depends_on` simple.
-  otel-lgtm:
-    image: grafana/otel-lgtm
-    container_name: nexo-otel-lgtm
-    ports:
-      - "3000:3000"    # Grafana UI
-      - "4317:4317"    # OTLP gRPC
-      - "4318:4318"    # OTLP HTTP
