@@ -288,3 +288,6 @@ tmp/
 
 # Inbox scratch / notebooks (local only)
 inbox/
+
+# macOS
+.DS_Store
