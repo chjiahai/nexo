@@ -291,3 +291,8 @@ inbox/
 
 # macOS
 .DS_Store
+
+# Self-hosted Langfuse stack compose — contains generated internal secrets
+# (the # CHANGEME values: postgres/clickhouse/minio/redis/nextauth). Keep it
+# local on the host that runs the stack; don't commit real credentials.
+docker-compose.langfuse.yml

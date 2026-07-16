@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator
 from pydantic_ai.messages import ModelMessage
 
 from nexo.agents.chat import chat_agent
+from nexo.observability import trace_span
 
 # session_id -> full message history. Swap for Redis when multi-process.
 _sessions: dict[str, list[ModelMessage]] = defaultdict(list)
@@ -57,7 +58,8 @@ async def handle_file(session_id: str, filename: str, file_data: bytes) -> Async
 
     try:
         yield msg("file_saving")
-        await upload_upload(session_id, filename, file_data)
+        with trace_span("TOS upload", input=filename):
+            await upload_upload(session_id, filename, file_data)
         yield msg("file_saved")
     except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
         yield msg("file_save_failed", error=exc)
@@ -76,7 +78,8 @@ async def handle_image(session_id: str, image_data: bytes) -> AsyncIterator[str]
 
     try:
         yield msg("image_saving")
-        await upload_image(session_id, image_data)
+        with trace_span("TOS upload"):
+            await upload_image(session_id, image_data)
         yield msg("image_saved")
     except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
         yield msg("image_save_failed", error=exc)

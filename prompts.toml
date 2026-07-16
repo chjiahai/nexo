@@ -12,6 +12,9 @@
 
 # --- Chat agent (text-in -> streamed text-out) -----------------------------
 [chat]
+# Bump when the system prompt changes — recorded as `prompt_version` trace
+# metadata so prompt iterations are filterable in Langfuse.
+version = "1"
 system_prompt = """
 You are Nexo, a helpful assistant running inside an enterprise messaging bot. \
 Answer concisely and helpfully.
@@ -26,23 +29,23 @@ Answer concisely and helpfully.
 [messages]
 welcome = "您好！我是 Nexo 智能助手，有什么可以帮您的吗？"
 thinking = "正在思考…"
-no_reply = "（无回复）"
+no_reply = "无回复"
 no_keywords = "（无）"
 
 # File route progress / errors. Original bytes are uploaded to TOS (not
 # written locally); the upload is the only step this revision — no parsing or
 # summarization yet.
-file_empty_url = "（文件下载链接为空，无法处理）"
+file_empty_url = "文件下载链接为空，无法处理。"
 file_downloading = "正在下载文件…"
-file_download_failed = "（下载失败：{error}）"
+file_download_failed = "下载失败：{error}"
 file_saving = "正在保存文件…"
-file_saved = "（文件已收到，已保存到对象存储。）"
-file_save_failed = "（保存到对象存储失败：{error}）"
+file_saved = "文件已收到，已保存到对象存储。"
+file_save_failed = "保存到对象存储失败：{error}"
 
 # Image route progress / errors. Images are stored to TOS (no OCR/vision yet).
-image_empty_url = "（图片下载链接为空，无法处理）"
+image_empty_url = "图片下载链接为空，无法处理。"
 image_downloading = "正在接收图片…"
-image_download_failed = "（图片下载失败：{error}）"
+image_download_failed = "图片下载失败：{error}"
 image_saving = "正在保存图片…"
-image_saved = "（图片已收到，已保存到对象存储。）"
-image_save_failed = "（图片保存失败：{error}）"
+image_saved = "图片已收到，已保存到对象存储。"
+image_save_failed = "图片保存失败：{error}"

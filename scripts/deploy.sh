@@ -6,8 +6,8 @@
 # Code reaches the remote via GitHub (the local `git push` already sent it
 # there); this script only triggers the remote `git pull`.
 #
-# Triggered automatically by .git/hooks/post-push (when main is pushed), or run
-# manually after a push: `bash scripts/deploy.sh`.
+# Run manually after a push: `bash scripts/deploy.sh`.
+# (Pushing code does not deploy — deploy is always a deliberate, manual step.)
 #
 # Prereqs (one-time):
 #   1. cp scripts/deploy.env.example scripts/deploy.env && fill it in.
@@ -59,7 +59,8 @@ if ! ssh "${REMOTE}" "test -f ${REMOTE_PATH}/.env"; then
   echo "WARNING: ${REMOTE_PATH}/.env missing on remote — docker compose will fail to start nexo." >&2
 fi
 
-# 4. Remote: rebuild + restart. otel-lgtm comes up too via depends_on.
+# 4. Remote: rebuild + restart. (The Langfuse stack runs separately at
+#    10.13.11.7:3000 — it is not part of this compose file.)
 echo "==> docker compose up -d --build (this rebuilds the nexo image)..."
 ssh "${REMOTE}" bash -lc "'
   cd ${REMOTE_PATH}

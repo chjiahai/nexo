@@ -21,12 +21,14 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlparse
 
 from aibot import WSClient, WSClientOptions, generate_req_id
 
 from nexo.app import handle_file, handle_image, handle_text
-from nexo.config import WECHAT_BOT_ID, WECHAT_BOT_SECRET
-from nexo.prompts import msg
+from nexo.config import WECHAT_BOT_ID, WECHAT_BOT_SECRET, WECOM_REQUEST_TIMEOUT_MS
+from nexo.observability import flush, start_heartbeat_loop, trace_span, trace_turn
+from nexo.prompts import CHAT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT_VERSION, msg
 
 logger = logging.getLogger("nexo.wecom")
 
@@ -133,7 +135,7 @@ async def _reply_streamed(
     chunks: AsyncIterator[str],
     *,
     accumulate: bool = True,
-) -> None:
+) -> str:
     """Stream an async generator of reply chunks back to WeCom.
 
     WeCom's stream model REPLACES the bubble content on each refresh (it does
@@ -148,7 +150,9 @@ async def _reply_streamed(
       and are wiped when the next stage appears. The final chunk replaces all
       progress, exactly like a chat reply.
 
-    On error, send a finish frame preserving whatever was last shown.
+    On error, send a finish frame preserving whatever was last shown. Returns
+    the final text sent to the bubble (the full reply, or the error text) so
+    the caller can attach it as the trace root's output.
     """
     stream_id = generate_req_id("stream")
 
@@ -159,6 +163,7 @@ async def _reply_streamed(
     # redundant frames and to preserve partial text on error.
     last_content = ""
     full: list[str] = []
+    final_text = ""
 
     try:
         await _send(msg("thinking"), finish=False)
@@ -235,7 +240,8 @@ async def _reply_streamed(
 
         # Finish frame must carry the final text (an empty finish frame would
         # wipe the bubble).
-        await _send(last_content or msg("no_reply"), finish=True)
+        final_text = last_content or msg("no_reply")
+        await _send(final_text, finish=True)
 
     except Exception as exc:  # noqa: BLE001 — must not leave the bubble hanging
         logger.exception("Error while handling WeCom message")
@@ -250,8 +256,16 @@ async def _reply_streamed(
                 else f"[出错] {exc}"
             )
             await _send(err_text, finish=True)
+            final_text = err_text
         except Exception:
             logger.exception("Failed to send error frame to WeCom")
+
+    return final_text
+
+
+def _user_id(session_id: str) -> str:
+    """Strip the `wecom:` channel prefix to get the user/conversation id."""
+    return session_id.split(":", 1)[1] if session_id.startswith("wecom:") else session_id
 
 
 def register_handlers(ws_client: WSClient) -> None:
@@ -281,8 +295,25 @@ def register_handlers(ws_client: WSClient) -> None:
     async def _on_text(frame: dict[str, Any]) -> None:
         text = _user_text(frame)
         session_id = _session_id_from_frame(frame)
-        logger.info("WeCom text from %s: %s", session_id, text)
-        await _reply_streamed(ws_client, frame, handle_text(session_id, text))
+        with trace_turn(
+            "WeCom text reply",
+            session_id=session_id,
+            user_id=_user_id(session_id),
+            tags=["we-com", "text"],
+            input=text,
+        ) as root:
+            logger.info("WeCom text from %s: %s", session_id, text)
+            reply = await _reply_streamed(ws_client, frame, handle_text(session_id, text))
+            if root is not None:
+                # Surface the prompt + version and the final reply at the trace
+                # root (the prompt is also captured inside the generation span).
+                root.update(
+                    output=reply,
+                    metadata={
+                        "system_prompt": CHAT_SYSTEM_PROMPT,
+                        "prompt_version": CHAT_SYSTEM_PROMPT_VERSION,
+                    },
+                )
 
     @ws_client.on("message.file")
     async def _on_file(frame: dict[str, Any]) -> None:
@@ -290,12 +321,19 @@ def register_handlers(ws_client: WSClient) -> None:
         filename = _filename_from_frame(frame)
         file_url = _media_field(frame, "url", "file")
         aes_key = _media_aeskey(frame, "file")
-        logger.info("WeCom file from %s: %s", session_id, filename)
-        await _reply_streamed(
-            ws_client, frame,
-            _stream_file(ws_client, session_id, filename, file_url, aes_key),
-            accumulate=False,
-        )
+        with trace_turn(
+            "WeCom file processing",
+            session_id=session_id,
+            user_id=_user_id(session_id),
+            tags=["we-com", "file"],
+            input=filename,
+        ):
+            logger.info("WeCom file from %s: %s", session_id, filename)
+            await _reply_streamed(
+                ws_client, frame,
+                _stream_file(ws_client, session_id, filename, file_url, aes_key),
+                accumulate=False,
+            )
 
     @ws_client.on("message.image")
     async def _on_image(frame: dict[str, Any]) -> None:
@@ -305,12 +343,18 @@ def register_handlers(ws_client: WSClient) -> None:
         session_id = _session_id_from_frame(frame)
         file_url = _media_field(frame, "url", "image")
         aes_key = _media_aeskey(frame, "image")
-        logger.info("WeCom image from %s", session_id)
-        await _reply_streamed(
-            ws_client, frame,
-            _stream_image(ws_client, session_id, file_url, aes_key),
-            accumulate=False,
-        )
+        with trace_turn(
+            "WeCom image processing",
+            session_id=session_id,
+            user_id=_user_id(session_id),
+            tags=["we-com", "image"],
+        ):
+            logger.info("WeCom image from %s", session_id)
+            await _reply_streamed(
+                ws_client, frame,
+                _stream_image(ws_client, session_id, file_url, aes_key),
+                accumulate=False,
+            )
 
     @ws_client.on("event.enter_chat")
     async def _on_enter_chat(frame: dict[str, Any]) -> None:
@@ -338,7 +382,10 @@ async def _stream_file(
 
     yield msg("file_downloading")
     try:
-        file_data, real_name = await ws_client.download_file(file_url, aes_key)
+        # Record only the URL host (not the signed path) to diagnose reachability.
+        host = urlparse(file_url).hostname
+        with trace_span("download file", input=filename, metadata={"url_host": host}):
+            file_data, real_name = await ws_client.download_file(file_url, aes_key)
     except Exception as exc:  # noqa: BLE001 — tell the user, don't hang the bubble
         yield msg("file_download_failed", error=exc)
         return
@@ -369,7 +416,9 @@ async def _stream_image(
 
     yield msg("image_downloading")
     try:
-        image_data, _ = await ws_client.download_file(file_url, aes_key)
+        host = urlparse(file_url).hostname
+        with trace_span("download image", metadata={"url_host": host}):
+            image_data, _ = await ws_client.download_file(file_url, aes_key)
     except Exception as exc:  # noqa: BLE001 — tell the user, don't hang the bubble
         yield msg("image_download_failed", error=exc)
         return
@@ -387,7 +436,11 @@ def build_client() -> WSClient:
         )
 
     ws_client = WSClient(
-        WSClientOptions(bot_id=WECHAT_BOT_ID, secret=WECHAT_BOT_SECRET)
+        WSClientOptions(
+            bot_id=WECHAT_BOT_ID,
+            secret=WECHAT_BOT_SECRET,
+            request_timeout=WECOM_REQUEST_TIMEOUT_MS,
+        )
     )
     register_handlers(ws_client)
     return ws_client
@@ -395,10 +448,8 @@ def build_client() -> WSClient:
 
 async def run() -> None:
     """Connect to WeCom and serve until interrupted."""
-    # Logging is configured by `nexo.observability.configure()` (called from
-    # the CLI) — no basicConfig here.
-    from nexo.observability import start_heartbeat_loop
-
+    # Logging + Langfuse tracing are configured by `nexo.observability.configure()`
+    # (called from the CLI) — no basicConfig here.
     ws_client = build_client()
     heartbeat = start_heartbeat_loop(lambda: ws_client.is_connected)
     try:
@@ -409,3 +460,4 @@ async def run() -> None:
     finally:
         heartbeat.cancel()
         ws_client.disconnect()
+        flush()  # ship buffered Langfuse traces before the process exits

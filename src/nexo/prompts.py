@@ -29,7 +29,10 @@ with _PROMPTS_FILE.open("rb") as _f:
 
 
 # --- Agent system prompts --------------------------------------------------
+# `version` is recorded as `prompt_version` trace metadata (observability) so
+# prompt iterations are filterable in Langfuse. Defaults to "1" if absent.
 CHAT_SYSTEM_PROMPT: str = _data["chat"]["system_prompt"].strip()
+CHAT_SYSTEM_PROMPT_VERSION: str = str(_data["chat"].get("version", "1"))
 
 # --- User-facing message templates ----------------------------------------
 _MESSAGES: dict[str, str] = _data["messages"]

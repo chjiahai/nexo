@@ -31,11 +31,27 @@ DATA_DIR = _ROOT / "data"
 # OPENAI_API_KEY / OPENAI_BASE_URL: consumed directly by pydantic-ai.
 MODEL_NAME = os.getenv("NEXO_MODEL", "openai:gpt-4o-mini")
 
+# --- Observability (Langfuse tracing) -------------------------------------
+# Langfuse SDK reads these directly from the environment. Both keys must be
+# set to enable tracing; with neither set, tracing is disabled (local dev).
+# LANGFUSE_BASE_URL: cloud region (https://cloud.langfuse.com, us/jp/hipaa) or
+# a self-hosted Langfuse URL. import of `langfuse` must happen AFTER load_dotenv
+# (this module runs load_dotenv at import), so observability.py imports langfuse
+# lazily inside configure() — not at module top.
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_BASE_URL = os.getenv("LANGFUSE_BASE_URL", "")
+
 # --- WeCom (企业微信) AI bot ------------------------------------------------
 # Credentials from the WeCom admin backend. The bot SDK connects out to
 # wss://openws.work.weixin.qq.com using these.
 WECHAT_BOT_ID = os.getenv("WECHAT_BOT_ID", "")
 WECHAT_BOT_SECRET = os.getenv("WECHAT_BOT_SECRET", "")
+
+# WeCom file/image download HTTP timeout (milliseconds). The aibot SDK defaults
+# to 10000 (10s), which is too tight for slow links or larger uploads — the
+# download is a direct aiohttp GET that ignores HTTP(S)_PROXY. Raise to 60s.
+WECOM_REQUEST_TIMEOUT_MS = int(os.getenv("WECOM_REQUEST_TIMEOUT_MS", "60000"))
 
 # --- Volcengine TOS (火山引擎对象存储) -------------------------------------
 # Primary durable store for everything users upload (files + images). The bot

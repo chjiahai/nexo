@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "wecom-aibot-python-sdk>=1.0.2",
     "tos>=2.0",
+    "langfuse>=4.0",
 ]
 
 [project.scripts]
