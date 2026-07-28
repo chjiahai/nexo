@@ -39,13 +39,21 @@ file_empty_url = "文件下载链接为空，无法处理。"
 file_downloading = "正在下载文件…"
 file_download_failed = "下载失败：{error}"
 file_saving = "正在保存文件…"
-file_saved = "文件已收到，已保存到对象存储。"
-file_save_failed = "保存到对象存储失败：{error}"
+file_saved = "文件已收到，已保存。"
+file_save_failed = "文件保存失败：{error}"
 
-# Image route progress / errors. Images are stored to TOS (no OCR/vision yet).
+# Image route progress / errors. Images are shipped to the remote folder (no OCR/vision yet).
 image_empty_url = "图片下载链接为空，无法处理。"
 image_downloading = "正在接收图片…"
 image_download_failed = "图片下载失败：{error}"
 image_saving = "正在保存图片…"
-image_saved = "图片已收到，已保存到对象存储。"
+image_saved = "图片已收到，已保存。"
 image_save_failed = "图片保存失败：{error}"
+
+# Video route progress / errors. Videos are shipped to the remote folder (no transcription yet).
+video_empty_url = "视频下载链接为空，无法处理。"
+video_downloading = "正在接收视频…"
+video_download_failed = "视频下载失败：{error}"
+video_saving = "正在保存视频…"
+video_saved = "视频已收到，已保存。"
+video_save_failed = "视频保存失败：{error}"

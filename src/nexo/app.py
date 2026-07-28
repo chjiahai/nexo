@@ -6,25 +6,35 @@ request kind has its own `handle_*` entry point; the transport layer picks
 the right one based on the message type (e.g. WeCom `msgtype`):
 
     text  -> handle_text  -> chat_agent (streamed)      [live]
-    file  -> handle_file  -> TOS storage + ack          [live]
-    image -> handle_image -> TOS storage + ack          [live]
+    media -> handle_media -> remote-folder storage + ack [live]
+
+The media route (file / image / video) is selected by the transport layer and
+passed in as a `MediaRoute`; `handle_media` is written once against that route.
 
 This is the only layer that holds cross-turn state (session history, for the
-text route). It does not import any transport code.
+text route), backed by a pluggable `SessionStore` (see `nexo.sessions`). It
+does not import any transport code.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import AsyncIterator
 
-from pydantic_ai.messages import ModelMessage
-
 from nexo.agents.chat import chat_agent
+from nexo.media import MediaRoute
 from nexo.observability import trace_span
+from nexo.sessions import InMemorySessionStore, SessionStore
 
-# session_id -> full message history. Swap for Redis when multi-process.
-_sessions: dict[str, list[ModelMessage]] = defaultdict(list)
+# Per-session conversation history. The default is an in-memory LRU-bounded
+# store; swap via `set_session_store` (e.g. a Redis-backed store for
+# multi-process deployments) without touching the rest of the app layer.
+_store: SessionStore = InMemorySessionStore()
+
+
+def set_session_store(store: SessionStore) -> None:
+    """Replace the active session store (tests / multi-process backends)."""
+    global _store
+    _store = store
 
 
 async def handle_text(session_id: str, text: str) -> AsyncIterator[str]:
@@ -33,7 +43,7 @@ async def handle_text(session_id: str, text: str) -> AsyncIterator[str]:
     The agent itself is stateless; we own the conversation history here and
     pass it in on every turn so the model sees prior context.
     """
-    history = _sessions[session_id]
+    history = _store.get(session_id)
 
     async with chat_agent.run_stream(text, message_history=history) as result:
         async for chunk in result.stream_text(delta=True):
@@ -41,50 +51,35 @@ async def handle_text(session_id: str, text: str) -> AsyncIterator[str]:
                 yield chunk
 
     # Persist the full conversation (history + this turn) for the next turn.
-    _sessions[session_id] = result.all_messages()
+    _store.set(session_id, result.all_messages())
 
 
-async def handle_file(session_id: str, filename: str, file_data: bytes) -> AsyncIterator[str]:
-    """Handle an uploaded file: store the original to TOS, then acknowledge.
+async def handle_media(
+    session_id: str,
+    route: MediaRoute,
+    filename: str | None,
+    data: bytes,
+) -> AsyncIterator[str]:
+    """Handle an uploaded media item: ship it to the remote uploads folder, then ack.
 
-    `file_data` is the already-downloaded-and-decrypted file content (the
-    transport layer handles download + AES decryption). The file is persisted
-    to TOS under docs/<user_id>/; we reply with a short confirmation. No
-    parsing/summarization yet — storage is the first step toward a later
-    document-processing pipeline.
+    `data` is the already-downloaded-and-decrypted content (the transport layer
+    handles download + AES decryption). Everything that varies by media type —
+    the upload function, the default filename, the user-facing strings — lives
+    on `route` (see `nexo.media`). No parsing/summarization yet: storage is the
+    first step toward a later document-processing pipeline.
     """
     from nexo.prompts import msg
-    from nexo.storage.tos import upload_upload
+    from nexo.storage import remote
 
     try:
-        yield msg("file_saving")
-        with trace_span("TOS upload", input=filename):
-            await upload_upload(session_id, filename, file_data)
-        yield msg("file_saved")
+        yield msg(route.saving)
+        with trace_span("media ship", input=filename):
+            await getattr(remote, route.upload_attr)(session_id, filename, data)
+        yield msg(route.saved)
     except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
-        yield msg("file_save_failed", error=exc)
-
-
-async def handle_image(session_id: str, image_data: bytes) -> AsyncIterator[str]:
-    """Handle an uploaded image: store it to TOS, then acknowledge.
-
-    `image_data` is the already-downloaded-and-decrypted image bytes (the
-    transport layer handles download + AES decryption). The image is persisted
-    to TOS under imgs/<user_id>/; we reply with a short confirmation. No
-    OCR/vision yet — storage is the first step toward a later multimodal pipeline.
-    """
-    from nexo.prompts import msg
-    from nexo.storage.tos import upload_image
-
-    try:
-        yield msg("image_saving")
-        with trace_span("TOS upload"):
-            await upload_image(session_id, image_data)
-        yield msg("image_saved")
-    except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
-        yield msg("image_save_failed", error=exc)
+        yield msg(route.save_failed, error=exc)
 
 
 def reset_session(session_id: str) -> None:
     """Clear a session's history (e.g., on an explicit reset request)."""
-    _sessions.pop(session_id, None)
+    _store.drop(session_id)

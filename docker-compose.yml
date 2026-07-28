@@ -17,6 +17,9 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+      # SSH 私钥，只读挂载（ship_media.sh 用它 scp 上传到远程文件夹）。
+      # 宿主机上该文件须 chmod 600；路径与 .env 的 NEXO_UPLOAD_SSH_KEY 对应。
+      - ./secrets/nexo_upload_key:/home/app/.ssh/nexo_upload_key:ro
     restart: unless-stopped
     # `nexo health` checks the heartbeat file written while the WebSocket is
     # connected — reflects real business liveness, unlike `nexo hello` (which

@@ -231,17 +231,17 @@ __marimo__/
 secrets.yaml
 secrets.toml
 
-# User-uploaded & generated document data (large, sensitive, regenerable)
-# Keep the directory layout via .gitkeep, ignore all contents.
-# Sample fixtures belong under tests/fixtures/, not data/.
-data/uploads/*
-!data/uploads/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-data/index/*
-!data/index/.gitkeep
-# Liveness heartbeat written by the bot at runtime (nexo health reads it).
+# data/ holds only the liveness heartbeat at runtime (nexo health reads it).
+# User uploads are scp'd to a remote folder, not written to local disk. The
+# .gitkeep keeps the directory present for the Docker bind mount
+# (./data:/app/data); everything else under data/ is runtime state — never
+# commit it.
+data/*
+!data/.gitkeep
 data/.heartbeat
+
+# Claude Code local settings (agent/tool config, not project source).
+.claude/
 
 # Remote deploy target config (names an internal test host + path).
 scripts/deploy.env

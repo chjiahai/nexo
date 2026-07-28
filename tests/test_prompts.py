@@ -28,9 +28,9 @@ def test_msg_returns_plain_string_without_placeholders():
 
 def test_msg_formats_placeholders():
     out = msg("file_download_failed", error="bad aeskey")
-    assert out == "（下载失败：bad aeskey）"
+    assert out == "下载失败：bad aeskey"
     out2 = msg("file_save_failed", error="tos down")
-    assert out2 == "（保存到对象存储失败：tos down）"
+    assert out2 == "文件保存失败：tos down"
 
 
 def test_msg_raises_on_unknown_key():

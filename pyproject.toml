@@ -8,7 +8,6 @@ dependencies = [
     "pydantic-ai>=2.3.0",
     "python-dotenv>=1.0",
     "wecom-aibot-python-sdk>=1.0.2",
-    "tos>=2.0",
     "langfuse>=4.0",
 ]
 

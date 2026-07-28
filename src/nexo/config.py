@@ -22,9 +22,18 @@ load_dotenv(_ROOT / ".env")
 
 # --- Data directory --------------------------------------------------------
 # Used ONLY for the liveness heartbeat (`data/.heartbeat`, see observability).
-# User uploads are NOT written here anymore — they live in Volcengine TOS
-# (see the TOS section below). Kept because the Docker healthcheck reads it.
+# User uploads are NOT written here — they are scp'd to a remote folder
+# (see the upload section below). Kept because the Docker healthcheck reads it.
 DATA_DIR = _ROOT / "data"
+
+# --- Debug frame capture ---------------------------------------------------
+# When enabled, every inbound WeCom frame's body is appended (one JSON line)
+# to DEBUG_FRAMES_PATH. Used to discover the payload shape of message types
+# the aibot SDK doesn't model (video, location, WeDrive file, imagetext, ...):
+# the SDK emits a generic `message` event for ALL frames, so a catch-all
+# listener sees even the ones it otherwise drops. Off by default.
+DEBUG_FRAMES = os.getenv("NEXO_DEBUG_FRAMES", "") == "1"
+DEBUG_FRAMES_PATH = DATA_DIR / "debug_frames.jsonl"
 
 # --- Model (any OpenAI-compatible endpoint) -------------------------------
 # NEXO_MODEL: provider-prefixed name, e.g. openai:gpt-4o-mini / openai:glm-4.6
@@ -53,12 +62,13 @@ WECHAT_BOT_SECRET = os.getenv("WECHAT_BOT_SECRET", "")
 # download is a direct aiohttp GET that ignores HTTP(S)_PROXY. Raise to 60s.
 WECOM_REQUEST_TIMEOUT_MS = int(os.getenv("WECOM_REQUEST_TIMEOUT_MS", "60000"))
 
-# --- Volcengine TOS (火山引擎对象存储) -------------------------------------
-# Primary durable store for everything users upload (files + images). The bot
-# no longer persists upload content to local disk. Set ALL FIVE — the first
-# TOS call fails fast with a clear message if any is missing.
-TOS_ACCESS_KEY_ID = os.getenv("TOS_ACCESS_KEY_ID", "")
-TOS_SECRET_ACCESS_KEY = os.getenv("TOS_SECRET_ACCESS_KEY", "")
-TOS_ENDPOINT = os.getenv("TOS_ENDPOINT", "")  # e.g. tos-cn-beijing.volces.com (no bucket, no https://)
-TOS_REGION = os.getenv("TOS_REGION", "")  # e.g. cn-beijing
-TOS_BUCKET = os.getenv("TOS_BUCKET", "")
+# --- 远程上传目标（scp 投递用户上传的文件/图片/视频）------------------------
+# nexo 通过 scripts/ship_media.sh 用 scp 把收到的媒体发到这台远程机器的
+# 指定文件夹。三个必填 —— 首次上传缺失会抛清晰报错。
+# 私钥需挂载进容器（见 docker-compose.yml）且对 appuser 可读（chmod 600），
+# 远程需 `ssh-copy-id` 配好免密登录。
+NEXO_UPLOAD_HOST = os.getenv("NEXO_UPLOAD_HOST", "")
+NEXO_UPLOAD_USER = os.getenv("NEXO_UPLOAD_USER", "")
+NEXO_UPLOAD_DIR = os.getenv("NEXO_UPLOAD_DIR", "")  # 远程绝对路径，如 /data/nexo-uploads
+NEXO_UPLOAD_KEY = os.getenv("NEXO_UPLOAD_SSH_KEY", "")  # 容器内私钥路径，可空
+NEXO_UPLOAD_PORT = os.getenv("NEXO_UPLOAD_SSH_PORT", "")  # 可空，默认 22
