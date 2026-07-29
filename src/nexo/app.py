@@ -60,7 +60,7 @@ async def handle_media(
     filename: str | None,
     data: bytes,
 ) -> AsyncIterator[str]:
-    """Handle an uploaded media item: ship it to the remote uploads folder, then ack.
+    """Handle an uploaded media item: persist it to the nexo-vfs folder, then ack.
 
     `data` is the already-downloaded-and-decrypted content (the transport layer
     handles download + AES decryption). Everything that varies by media type —
@@ -69,12 +69,12 @@ async def handle_media(
     first step toward a later document-processing pipeline.
     """
     from nexo.prompts import msg
-    from nexo.storage import remote
+    from nexo.storage import vfs
 
     try:
         yield msg(route.saving)
-        with trace_span("media ship", input=filename):
-            await getattr(remote, route.upload_attr)(session_id, filename, data)
+        with trace_span("media save", input=filename):
+            await getattr(vfs, route.upload_attr)(session_id, filename, data)
         yield msg(route.saved)
     except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
         yield msg(route.save_failed, error=exc)

@@ -22,7 +22,7 @@ load_dotenv(_ROOT / ".env")
 
 # --- Data directory --------------------------------------------------------
 # Used ONLY for the liveness heartbeat (`data/.heartbeat`, see observability).
-# User uploads are NOT written here — they are scp'd to a remote folder
+# User uploads are NOT written here — they land in the nexo-vfs mount
 # (see the upload section below). Kept because the Docker healthcheck reads it.
 DATA_DIR = _ROOT / "data"
 
@@ -57,18 +57,18 @@ LANGFUSE_BASE_URL = os.getenv("LANGFUSE_BASE_URL", "")
 WECHAT_BOT_ID = os.getenv("WECHAT_BOT_ID", "")
 WECHAT_BOT_SECRET = os.getenv("WECHAT_BOT_SECRET", "")
 
+# 用户所属组织 ID。所有用户的上传文件夹都归属到该组织 ID 下，便于按组织
+# 隔离/归档。与机器人 AK/SK 写在一起便于维护。
+NEXO_ORG_ID = os.getenv("NEXO_ORG_ID", "")
+
 # WeCom file/image download HTTP timeout (milliseconds). The aibot SDK defaults
 # to 10000 (10s), which is too tight for slow links or larger uploads — the
 # download is a direct aiohttp GET that ignores HTTP(S)_PROXY. Raise to 60s.
 WECOM_REQUEST_TIMEOUT_MS = int(os.getenv("WECOM_REQUEST_TIMEOUT_MS", "60000"))
 
-# --- 远程上传目标（scp 投递用户上传的文件/图片/视频）------------------------
-# nexo 通过 scripts/ship_media.sh 用 scp 把收到的媒体发到这台远程机器的
-# 指定文件夹。三个必填 —— 首次上传缺失会抛清晰报错。
-# 私钥需挂载进容器（见 docker-compose.yml）且对 appuser 可读（chmod 600），
-# 远程需 `ssh-copy-id` 配好免密登录。
-NEXO_UPLOAD_HOST = os.getenv("NEXO_UPLOAD_HOST", "")
-NEXO_UPLOAD_USER = os.getenv("NEXO_UPLOAD_USER", "")
-NEXO_UPLOAD_DIR = os.getenv("NEXO_UPLOAD_DIR", "")  # 远程绝对路径，如 /data/nexo-uploads
-NEXO_UPLOAD_KEY = os.getenv("NEXO_UPLOAD_SSH_KEY", "")  # 容器内私钥路径，可空
-NEXO_UPLOAD_PORT = os.getenv("NEXO_UPLOAD_SSH_PORT", "")  # 可空，默认 22
+# --- 用户上传落盘（写入 nexo-vfs 分布式文件系统）----------------------------
+# 收到的文件/图片/视频直接流式写入 nexo-vfs 挂载点，不区分类型，统一落到
+# <NEXO_VFS_DIR>/<NEXO_ORG_ID>/<user_id>/ 下。NEXO_ORG_ID 见上方 WeCom 块。
+# NEXO_VFS_DIR 默认 ~/nexo-vfs；Docker 内对应 docker-compose 挂载的
+# /home/app/nexo-vfs。缺失时首次上传会抛清晰报错。
+NEXO_VFS_DIR = os.getenv("NEXO_VFS_DIR", str(Path.home() / "nexo-vfs"))

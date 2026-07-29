@@ -17,9 +17,10 @@ services:
       - .env
     volumes:
       - ./data:/app/data
-      # SSH 私钥，只读挂载（ship_media.sh 用它 scp 上传到远程文件夹）。
-      # 宿主机上该文件须 chmod 600；路径与 .env 的 NEXO_UPLOAD_SSH_KEY 对应。
-      - ./secrets/nexo_upload_key:/home/app/.ssh/nexo_upload_key:ro
+      # nexo-vfs 分布式文件系统：把宿主机的 ~/nexo-vfs 挂载进容器，用户上传的
+      # 文件/图片/视频直接写到 <NEXO_VFS_DIR>/<NEXO_ORG_ID>/<user_id>/ 下。
+      # 与 .env 的 NEXO_VFS_DIR 默认值（/home/app/nexo-vfs）对应。
+      - ${HOME}/nexo-vfs:/home/app/nexo-vfs
     restart: unless-stopped
     # `nexo health` checks the heartbeat file written while the WebSocket is
     # connected — reflects real business liveness, unlike `nexo hello` (which
@@ -36,3 +37,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - default
+      - langfuse
+
+networks:
+  default:
+    # 固定 nexo 项目默认网络的子网，避免 Docker 自动分配 172.18.0.0/16 劫持
+    # 公司 172.16/12 段（如真实 MySQL 172.18.12.87）的路由。
+    name: nexo_default
+    ipam:
+      config:
+        - subnet: 10.201.0.0/24
+  langfuse:
+    name: langfuse_default
+    external: true

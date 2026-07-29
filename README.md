@@ -82,7 +82,7 @@ All configuration lives in `.env` (gitignored — copy from `.env.example`). Gro
 
 - **Model** — any OpenAI-compatible endpoint. `NEXO_MODEL` is a pydantic-ai provider-prefixed name (e.g. `openai-chat:deepseek-v4-flash`), with `OPENAI_API_KEY` / `OPENAI_BASE_URL` for credentials. Switching to ZhipuAI (GLM) is a two-line change (documented in `.env.example`).
 - **WeCom bot** — `WECHAT_BOT_ID` / `WECHAT_BOT_SECRET` (from the WeCom admin backend) + `WECOM_REQUEST_TIMEOUT_MS` for file/image downloads.
-- **Remote upload target** — `NEXO_UPLOAD_HOST` / `NEXO_UPLOAD_USER` / `NEXO_UPLOAD_DIR` (+ optional `NEXO_UPLOAD_SSH_KEY` / `NEXO_UPLOAD_SSH_PORT`). Received files/images are scp'd to this folder via `scripts/ship_media.sh`; nothing is written to local disk.
+- **Upload storage (nexo-vfs)** — `NEXO_ORG_ID` (the org users belong to) + `NEXO_VFS_DIR` (the nexo-vfs mount, defaults to `~/nexo-vfs`). Received files/images/videos are written flat under `<NEXO_VFS_DIR>/<NEXO_ORG_ID>/<user_id>/` — no type subfolders.
 - **Observability** — `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`. Tracing is enabled only when both keys are set; with neither set it is a no-op (local dev).
 
 ### Tuning prompts & wording
@@ -101,7 +101,7 @@ nexo 的运行入口 `nexo bot` 是一个**出站 WebSocket 客户端**(连接�
 cp .env.example .env
 # 编辑 .env,填入 OPENAI_API_KEY / OPENAI_BASE_URL / NEXO_MODEL
 # 以及 WECHAT_BOT_ID / WECHAT_BOT_SECRET
-# 以及 NEXO_UPLOAD_* (scp 投递上传文件到远程文件夹)
+# 以及 NEXO_ORG_ID / NEXO_VFS_DIR (上传文件落到 nexo-vfs)
 ```
 
 `.env` 已被 gitignore,不会进入镜像(由 `.dockerignore` 兜底)。
@@ -114,7 +114,7 @@ docker compose logs -f nexo  # 查看日志
 docker compose down          # 停止
 ```
 
-`./data:/app/data` 绑定挂载仅用于持久化**心跳文件**(Docker 健康检查用)。用户上传的文件与图片通过 **scp 投递到远程文件夹**(`NEXO_UPLOAD_*` 配置 + 只读挂载的 SSH 私钥),不写本地磁盘。
+`./data:/app/data` 绑定挂载仅用于持久化**心跳文件**(Docker 健康检查用)。用户上传的文件与图片直接写入 **nexo-vfs 分布式文件系统**：compose 把宿主机的 `~/nexo-vfs` 挂载到容器内 `/home/app/nexo-vfs`，文件落到 `<NEXO_VFS_DIR>/<NEXO_ORG_ID>/<user_id>/` 下，宿主机同步可见。
 
 ### 3. 健康检查
 

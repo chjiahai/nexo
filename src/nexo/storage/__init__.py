@@ -1,8 +1,8 @@
 """Storage backends for user uploads.
 
-Currently the remote-folder backend (`remote.py`): uploads are scp'd to a
-specified folder on a remote machine via `scripts/ship_media.sh`. Importing
-this package should stay cheap — config is read lazily so a
-missing/misconfigured store only errors when something actually tries to
-persist.
+Currently the local VFS backend (`vfs.py`): uploads are written directly to the
+nexo-vfs distributed filesystem mounted at `NEXO_VFS_DIR`, flat under
+`<org_id>/<user_id>/`. Importing this package should stay cheap — config is
+read lazily so a missing/misconfigured store only errors when something
+actually tries to persist.
 """

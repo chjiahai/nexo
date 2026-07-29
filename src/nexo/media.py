@@ -9,9 +9,9 @@ new media type is now one route + one upload function + six prompt strings,
 with no new handler code.
 
 The upload function is referenced by attribute name (not captured as a
-callable) so `handle_media` resolves it lazily via `getattr(remote, ...)`. This
+callable) so `handle_media` resolves it lazily via `getattr(vfs, ...)`. This
 mirrors the lazy-import style already used in `app.py` and keeps monkeypatching
-`nexo.storage.remote.<fn>` effective in tests.
+`nexo.storage.vfs.<fn>` effective in tests.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ class MediaRoute:
     """Everything that differs between the file / image / video routes."""
 
     kind: str
-    upload_attr: str  # name of the upload function on `nexo.storage.remote`
+    upload_attr: str  # name of the upload function on `nexo.storage.vfs`
     default_name: str | None  # filename when neither SDK nor frame provides one
     # Six user-facing message keys (see prompts.toml [messages]).
     empty_url: str

@@ -28,11 +28,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.13-slim-bookworm AS runtime
 
 # ca-certificates: required for wss:// TLS to the WeCom endpoint and the
-# OpenAI-compatible HTTPS calls. openssh-client: scp/ssh to ship user uploads
-# to the remote folder (scripts/ship_media.sh). tini: proper PID-1 signal
-# handling so the asyncio loop receives SIGINT for a clean shutdown.
+# OpenAI-compatible HTTPS calls. tini: proper PID-1 signal handling so the
+# asyncio loop receives SIGINT for a clean shutdown.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates openssh-client tini && \
+    apt-get install -y --no-install-recommends ca-certificates tini && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user (uid 10001 to avoid colliding with host uid 1000).
@@ -49,8 +48,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1
 
 # Pre-create the data dir owned by appuser (the bind-mount overlays this).
-# Only `data/.heartbeat` is written here (Docker healthcheck) — uploads are
-# scp'd to the remote folder, not written to local disk.
+# Only `data/.heartbeat` is written here (Docker healthcheck) — uploads land
+# in the nexo-vfs mount, not on local disk.
 RUN mkdir -p /app/data && \
     chown -R appuser:appgroup /app
 
@@ -59,7 +58,7 @@ USER appuser
 # Copy source so config.py's Path(__file__).parents[2] == /app holds, making
 # `docker run -v ./.env:/app/.env ...` work without compose.
 # prompts.toml is read at import time by nexo.prompts — must be at /app/prompts.toml.
-# scripts/ holds ship_media.sh, invoked by nexo.storage.remote to scp uploads.
+# scripts/ holds publish.sh (multi-arch image build helper).
 COPY --chown=appuser:appgroup src/ ./src/
 COPY --chown=appuser:appgroup --chmod=0755 scripts/ ./scripts/
 COPY --chown=appuser:appgroup pyproject.toml README.md prompts.toml ./

@@ -105,7 +105,7 @@ def test_handle_media_file_stores_and_acks(monkeypatch):
         uploaded.append((user_id, filename, data))
         return "docs/fake/key"
 
-    monkeypatch.setattr("nexo.storage.remote.upload_file", fake_upload)
+    monkeypatch.setattr("nexo.storage.vfs.upload_file", fake_upload)
     out = asyncio.run(_collect_media("s6", media.FILE, "report.pdf", b"hello"))
     assert uploaded == [("s6", "report.pdf", b"hello")]
     assert "正在保存文件" in out
@@ -117,7 +117,7 @@ def test_handle_media_file_wraps_upload_errors(monkeypatch):
     async def boom(user_id: str, filename: str | None, data: bytes) -> str:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("nexo.storage.remote.upload_file", boom)
+    monkeypatch.setattr("nexo.storage.vfs.upload_file", boom)
     out = asyncio.run(_collect_media("s6", media.FILE, "report.pdf", b"hello"))
     assert "文件保存失败" in out
     assert "boom" in out
@@ -131,7 +131,7 @@ def test_handle_media_image_stores_and_acks(monkeypatch):
         uploaded.append((user_id, filename, data))
         return "imgs/fake/key"
 
-    monkeypatch.setattr("nexo.storage.remote.upload_image", fake_upload)
+    monkeypatch.setattr("nexo.storage.vfs.upload_image", fake_upload)
     out = asyncio.run(_collect_media("s7", media.IMAGE, None, b"\x89PNG\r\n\x1a\n..."))
     assert uploaded == [("s7", None, b"\x89PNG\r\n\x1a\n...")]
     assert "图片已收到" in out
@@ -142,7 +142,7 @@ def test_handle_media_image_wraps_upload_errors(monkeypatch):
     async def boom(user_id: str, filename: str | None, data: bytes) -> str:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("nexo.storage.remote.upload_image", boom)
+    monkeypatch.setattr("nexo.storage.vfs.upload_image", boom)
     out = asyncio.run(_collect_media("s7", media.IMAGE, None, b"x"))
     assert "图片保存失败" in out
     assert "boom" in out
@@ -156,7 +156,7 @@ def test_handle_media_video_stores_and_acks(monkeypatch):
         uploaded.append((user_id, filename, data))
         return "videos/fake/key"
 
-    monkeypatch.setattr("nexo.storage.remote.upload_video", fake_upload)
+    monkeypatch.setattr("nexo.storage.vfs.upload_video", fake_upload)
     out = asyncio.run(_collect_media("s8", media.VIDEO, "clip.mp4", b"\x00\x00\x00..."))
     assert uploaded == [("s8", "clip.mp4", b"\x00\x00\x00...")]
     assert "正在保存视频" in out
@@ -168,7 +168,7 @@ def test_handle_media_video_wraps_upload_errors(monkeypatch):
     async def boom(user_id: str, filename: str | None, data: bytes) -> str:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("nexo.storage.remote.upload_video", boom)
+    monkeypatch.setattr("nexo.storage.vfs.upload_video", boom)
     out = asyncio.run(_collect_media("s8", media.VIDEO, "clip.mp4", b"x"))
     assert "视频保存失败" in out
     assert "boom" in out
