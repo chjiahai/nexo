@@ -14,7 +14,6 @@ from pydantic_ai.models.test import TestModel
 
 from nexo import app
 from nexo.agents.chat import chat_agent
-from nexo import media
 
 
 @pytest.fixture(autouse=True)
@@ -95,89 +94,3 @@ def test_in_memory_store_evicts_least_recently_used():
     assert "a" in store  # touched recently -> survives
     assert "c" in store
     assert "b" not in store  # LRU victim
-
-
-def test_handle_media_file_stores_and_acks(monkeypatch):
-    """handle_media ships a file to the remote folder and replies with the saved message."""
-    uploaded: list[tuple[str, str | None, bytes]] = []
-
-    async def fake_upload(user_id: str, filename: str | None, data: bytes) -> str:
-        uploaded.append((user_id, filename, data))
-        return "docs/fake/key"
-
-    monkeypatch.setattr("nexo.storage.vfs.upload_file", fake_upload)
-    out = asyncio.run(_collect_media("s6", media.FILE, "report.pdf", b"hello"))
-    assert uploaded == [("s6", "report.pdf", b"hello")]
-    assert "正在保存文件" in out
-    assert "已保存" in out
-
-
-def test_handle_media_file_wraps_upload_errors(monkeypatch):
-    """An upload failure becomes a friendly Chinese message, not a crash."""
-    async def boom(user_id: str, filename: str | None, data: bytes) -> str:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr("nexo.storage.vfs.upload_file", boom)
-    out = asyncio.run(_collect_media("s6", media.FILE, "report.pdf", b"hello"))
-    assert "文件保存失败" in out
-    assert "boom" in out
-
-
-def test_handle_media_image_stores_and_acks(monkeypatch):
-    """handle_media ships an image to the remote folder and replies with the saved message."""
-    uploaded: list[tuple[str, str | None, bytes]] = []
-
-    async def fake_upload(user_id: str, filename: str | None, data: bytes) -> str:
-        uploaded.append((user_id, filename, data))
-        return "imgs/fake/key"
-
-    monkeypatch.setattr("nexo.storage.vfs.upload_image", fake_upload)
-    out = asyncio.run(_collect_media("s7", media.IMAGE, None, b"\x89PNG\r\n\x1a\n..."))
-    assert uploaded == [("s7", None, b"\x89PNG\r\n\x1a\n...")]
-    assert "图片已收到" in out
-
-
-def test_handle_media_image_wraps_upload_errors(monkeypatch):
-    """An upload failure becomes a friendly Chinese message, not a crash."""
-    async def boom(user_id: str, filename: str | None, data: bytes) -> str:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr("nexo.storage.vfs.upload_image", boom)
-    out = asyncio.run(_collect_media("s7", media.IMAGE, None, b"x"))
-    assert "图片保存失败" in out
-    assert "boom" in out
-
-
-def test_handle_media_video_stores_and_acks(monkeypatch):
-    """handle_media ships a video to the remote folder and replies with the saved message."""
-    uploaded: list[tuple[str, str | None, bytes]] = []
-
-    async def fake_upload(user_id: str, filename: str | None, data: bytes) -> str:
-        uploaded.append((user_id, filename, data))
-        return "videos/fake/key"
-
-    monkeypatch.setattr("nexo.storage.vfs.upload_video", fake_upload)
-    out = asyncio.run(_collect_media("s8", media.VIDEO, "clip.mp4", b"\x00\x00\x00..."))
-    assert uploaded == [("s8", "clip.mp4", b"\x00\x00\x00...")]
-    assert "正在保存视频" in out
-    assert "已保存" in out
-
-
-def test_handle_media_video_wraps_upload_errors(monkeypatch):
-    """An upload failure becomes a friendly Chinese message, not a crash."""
-    async def boom(user_id: str, filename: str | None, data: bytes) -> str:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr("nexo.storage.vfs.upload_video", boom)
-    out = asyncio.run(_collect_media("s8", media.VIDEO, "clip.mp4", b"x"))
-    assert "视频保存失败" in out
-    assert "boom" in out
-
-
-async def _collect_media(
-    session_id: str, route: media.MediaRoute, filename: str | None, data: bytes
-) -> str:
-    chunks: list[str] = []
-    async for chunk in app.handle_media(session_id, route, filename, data):
-        chunks.append(chunk)
-    return "".join(chunks)

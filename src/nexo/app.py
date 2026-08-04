@@ -6,14 +6,14 @@ request kind has its own `handle_*` entry point; the transport layer picks
 the right one based on the message type (e.g. WeCom `msgtype`):
 
     text  -> handle_text  -> chat_agent (streamed)      [live]
-    media -> handle_media -> remote-folder storage + ack [live]
-
-The media route (file / image / video) is selected by the transport layer and
-passed in as a `MediaRoute`; `handle_media` is written once against that route.
 
 This is the only layer that holds cross-turn state (session history, for the
 text route), backed by a pluggable `SessionStore` (see `nexo.sessions`). It
 does not import any transport code.
+
+Media (file/image/video) no longer flows through the app layer — the bot
+downloads + stages it and `nexo drain` uploads to OBS, so there is no
+`handle_media` here.
 """
 
 from __future__ import annotations
@@ -21,8 +21,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from nexo.agents.chat import chat_agent
-from nexo.media import MediaRoute
-from nexo.observability import trace_span
 from nexo.sessions import InMemorySessionStore, SessionStore
 
 # Per-session conversation history. The default is an in-memory LRU-bounded
@@ -52,32 +50,6 @@ async def handle_text(session_id: str, text: str) -> AsyncIterator[str]:
 
     # Persist the full conversation (history + this turn) for the next turn.
     _store.set(session_id, result.all_messages())
-
-
-async def handle_media(
-    session_id: str,
-    route: MediaRoute,
-    filename: str | None,
-    data: bytes,
-) -> AsyncIterator[str]:
-    """Handle an uploaded media item: persist it to the nexo-vfs folder, then ack.
-
-    `data` is the already-downloaded-and-decrypted content (the transport layer
-    handles download + AES decryption). Everything that varies by media type —
-    the upload function, the default filename, the user-facing strings — lives
-    on `route` (see `nexo.media`). No parsing/summarization yet: storage is the
-    first step toward a later document-processing pipeline.
-    """
-    from nexo.prompts import msg
-    from nexo.storage import vfs
-
-    try:
-        yield msg(route.saving)
-        with trace_span("media save", input=filename):
-            await getattr(vfs, route.upload_attr)(session_id, filename, data)
-        yield msg(route.saved)
-    except Exception as exc:  # noqa: BLE001 — friendly message, bubble always gets a finish frame
-        yield msg(route.save_failed, error=exc)
 
 
 def reset_session(session_id: str) -> None:

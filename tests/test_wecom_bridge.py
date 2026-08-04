@@ -8,11 +8,12 @@ same hermetic pattern used in test_app.py.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from nexo import app, media
+from nexo import app
 from nexo.agents.chat import chat_agent
 from nexo.api.wecom import frames, handlers, streaming
 
@@ -324,17 +325,95 @@ def test_register_handlers_wires_events():
     assert stub.listeners("message")
 
 
-def test_image_message_downloads_and_delegates(monkeypatch):
-    """An image is downloaded via the SDK, then handed to handle_image (which
-    stores it). No more silent 'not supported' rejection."""
+# --- media path: download → stage → outbox → ack ---------------------------
+# The bot no longer uploads to OBS or publishes. It downloads while the WeCom
+# URL is fresh, stages the bytes locally, enqueues an outbox intent, and replies
+# with a short configurable ack. drain does the upload + publish.
+
+def _stub_outbox(monkeypatch, captured: dict):
+    """Replace outbox.enqueue_media with a recorder; avoid touching SQLite."""
+    async def fake_enqueue(kind, frame, staging_path, org_id, bot_id):
+        captured.update(kind=kind, staging_path=staging_path, org_id=org_id, bot_id=bot_id)
+        return 1
+    monkeypatch.setattr(handlers.outbox, "enqueue_media", fake_enqueue)
+
+
+def test_handle_media_downloads_stages_enqueues_acks(monkeypatch, tmp_path):
+    """A file is downloaded, staged to disk, enqueued to outbox, then acked."""
+    monkeypatch.setattr(handlers, "NEXO_STAGING_DIR", str(tmp_path))
+    captured: dict = {}
+    _stub_outbox(monkeypatch, captured)
+
+    fake = FakeWSClient(downloads=[(b"file-bytes", "report.pdf")])
+    frame = _file_frame({
+        "file": {"url": "https://x/y.pdf", "aeskey": "k="},
+        "chattype": "single", "from": {"userid": "2"}, "msgid": "mid-1"},
+    )
+
+    asyncio.run(handlers._handle_media(fake, frame, "file"))
+
+    # Downloaded with the frame's url + aeskey.
+    assert fake.download_calls == [("https://x/y.pdf", "k=")]
+    # Staged the plaintext bytes to disk.
+    assert Path(captured["staging_path"]).read_bytes() == b"file-bytes"
+    # Enqueued the intent with kind + ids.
+    assert captured["kind"] == "file"
+    assert captured["org_id"] == handlers.NEXO_ORG_ID
+    assert captured["bot_id"] == handlers.WECHAT_BOT_ID
+    # Replied with the configured ack as a single finish frame.
+    assert fake.stream_calls[-1][2] is True
+    assert fake.stream_calls[-1][1] == handlers.MEDIA_ACK_TEXT
+
+
+def test_handle_media_empty_url_replies_error(monkeypatch, tmp_path):
+    """No download URL -> an error ack, no SDK call, no outbox enqueue."""
+    monkeypatch.setattr(handlers, "NEXO_STAGING_DIR", str(tmp_path))
+    captured: dict = {}
+    _stub_outbox(monkeypatch, captured)
+
+    fake = FakeWSClient()
+    frame = _file_frame({"file": {"filename": "a.pdf"}, "msgid": "mid-2"})  # no url
+
+    asyncio.run(handlers._handle_media(fake, frame, "file"))
+
+    assert fake.download_calls == []
+    assert "staging_path" not in captured  # never enqueued
+    last_content, last_finish = fake.stream_calls[-1][1], fake.stream_calls[-1][2]
+    assert last_finish is True
+    assert "无下载地址" in last_content
+
+
+def test_handle_media_download_failure_replies_error(monkeypatch, tmp_path):
+    """A download/decrypt error becomes a readable error ack, not a crash."""
+    monkeypatch.setattr(handlers, "NEXO_STAGING_DIR", str(tmp_path))
+    captured: dict = {}
+    _stub_outbox(monkeypatch, captured)
+
+    fake = FakeWSClient(downloads=RuntimeError("bad aeskey"))
+    frame = _file_frame({"file": {"url": "https://x/y", "aeskey": "k="}, "msgid": "mid-3"})
+
+    asyncio.run(handlers._handle_media(fake, frame, "file"))
+
+    assert "staging_path" not in captured  # never enqueued
+    last_content, last_finish = fake.stream_calls[-1][1], fake.stream_calls[-1][2]
+    assert last_finish is True
+    assert "出错" in last_content
+    assert "bad aeskey" in last_content
+
+
+def test_image_message_downloads_stages_enqueues_acks(monkeypatch, tmp_path):
+    """Emitting message.image drives the full bot path: download → stage → outbox → ack."""
     from pyee.asyncio import AsyncIOEventEmitter
 
+    monkeypatch.setattr(handlers, "NEXO_STAGING_DIR", str(tmp_path))
+    captured: dict = {}
+    _stub_outbox(monkeypatch, captured)
+
     class EmitterClient(AsyncIOEventEmitter):
-        def __init__(self, downloads=None) -> None:
+        def __init__(self) -> None:
             super().__init__()
             self.stream_calls: list[tuple[str, str, bool]] = []
             self.download_calls: list[tuple[str, str]] = []
-            self.downloads = downloads if downloads is not None else []
 
         async def reply_stream(self, frame, stream_id, content, finish=False, **_):
             self.stream_calls.append((stream_id, content, finish))
@@ -344,183 +423,40 @@ def test_image_message_downloads_and_delegates(monkeypatch):
 
         async def download_file(self, url, aes_key=None):
             self.download_calls.append((url, aes_key))
-            if not self.downloads:
-                raise AssertionError("no fake download queued")
-            return self.downloads.pop(0)
+            return (b"\x89PNG-bytes", None)
 
-    fake = EmitterClient(downloads=[(b"\x89PNG-bytes", None)])
+    fake = EmitterClient()
     handlers.register_handlers(fake)
-
-    captured: dict = {}
-
-    async def fake_handle_media(session_id, route, filename, data):
-        captured.update(session_id=session_id, route=route, filename=filename, data=data)
-        yield "（图片已收到，已保存到对象存储。）"
-
-    monkeypatch.setattr(handlers, "handle_media", fake_handle_media)
-
     frame = _image_frame(url="https://i/p.png", aeskey="img-key=",
-                         chatid="group-1")
+                         chatid="group-1", msgid="mid-img")
 
     async def _go():
-        # emit() is sync; it schedules the async handler on this loop. Yield
-        # once so the scheduled task actually runs to completion.
         fake.emit("message.image", frame)
         await asyncio.sleep(0.05)
 
     asyncio.run(_go())
 
-    # Image downloaded with the frame's url + aeskey, then handed to handle_media.
     assert fake.download_calls == [("https://i/p.png", "img-key=")]
-    assert captured["data"] == b"\x89PNG-bytes"
-    assert captured["route"] is media.IMAGE
-    contents = [c for _, c, _ in fake.stream_calls]
-    assert contents, "expected a reply for image messages"
-    assert "图片已收到" in contents[-1]
-    # Last frame is the finish frame.
+    assert Path(captured["staging_path"]).read_bytes() == b"\x89PNG-bytes"
+    assert captured["kind"] == "image"
     assert fake.stream_calls[-1][2] is True
+    assert fake.stream_calls[-1][1] == handlers.MEDIA_ACK_TEXT
 
 
-def test_stream_image_downloads_and_delegates(monkeypatch):
-    """_stream_media(image): SDK download+decrypt yields plaintext bytes, then
-    hands off to handle_media."""
-    fake = FakeWSClient()
-    fake.downloads = [(b"png-bytes", None)]
-
-    captured: dict = {}
-
-    async def fake_handle(session_id, route, filename, data):
-        captured.update(session_id=session_id, route=route, filename=filename, data=data)
-        yield "ok:saved"
-
-    monkeypatch.setattr(handlers, "handle_media", fake_handle)
-
-    async def gen():
-        async for c in handlers._stream_media(fake, "wecom:u1", media.IMAGE, "https://i/p", "k"):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-
-    # SDK download called with url + aes_key.
-    assert fake.download_calls == [("https://i/p", "k")]
-    # handle_media got the decrypted bytes.
-    assert captured["data"] == b"png-bytes"
-    assert captured["session_id"] == "wecom:u1"
-    # Progress + delegated chunk streamed out.
-    assert chunks[0] == "正在接收图片…"
-    assert chunks[-1] == "ok:saved"
-
-
-def test_stream_image_empty_url_yields_error():
-    """No download URL -> a clear user-facing message, no SDK call."""
-    fake = FakeWSClient()
-
-    async def gen():
-        async for c in handlers._stream_media(fake, "wecom:u1", media.IMAGE, "", "k"):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-    assert fake.downloads == []
-    assert "下载链接为空" in chunks[-1]
-
-
-def test_stream_image_download_failure_surfaces_error(monkeypatch):
-    """A download/decrypt error becomes a readable message, not a crash."""
-    fake = FakeWSClient(downloads=RuntimeError("bad aeskey"))
-
-    async def fail_handle(*a, **k):  # pragma: no cover — must not run
-        yield "should not reach"
-
-    monkeypatch.setattr(handlers, "handle_media", fail_handle)
-
-    async def gen():
-        async for c in handlers._stream_media(fake, "wecom:u1", media.IMAGE, "https://i/p", "k"):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-    assert "下载失败" in chunks[-1]
-    assert "bad aeskey" in chunks[-1]
-
-
-def test_stream_file_downloads_and_delegates(monkeypatch):
-    """_stream_media(file): SDK download+decrypt yields plaintext bytes, then
-    hands off to handle_media using the SDK-provided filename over the frame hash."""
-    fake = FakeWSClient()
-    fake.downloads = [(b"plaintext-bytes", "real-name.docx")]
-
-    captured: dict = {}
-
-    async def fake_handle(session_id, route, filename, data):
-        captured.update(session_id=session_id, route=route, filename=filename, data=data)
-        yield f"ok:{filename}"
-
-    monkeypatch.setattr(handlers, "handle_media", fake_handle)
-
-    async def gen():
-        async for c in handlers._stream_media(
-            fake, "wecom:u1", media.FILE, "https://x/y", "k", filename="hash.docx"
-        ):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-
-    # SDK download called with url + aes_key.
-    assert fake.download_calls == [("https://x/y", "k")]
-    # handle_media got the decrypted bytes and the SDK filename (not the hash).
-    assert captured["data"] == b"plaintext-bytes"
-    assert captured["filename"] == "real-name.docx"
-    assert captured["session_id"] == "wecom:u1"
-    # Progress + delegated chunk streamed out.
-    assert chunks[0] == "正在下载文件…"
-    assert chunks[-1] == "ok:real-name.docx"
-
-
-def test_stream_file_empty_url_yields_error():
-    """No download URL -> a clear user-facing message, no SDK call."""
-    fake = FakeWSClient()
-
-    async def gen():
-        async for c in handlers._stream_media(
-            fake, "wecom:u1", media.FILE, "", "k", filename="x.docx"
-        ):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-    assert fake.downloads == []
-    assert "下载链接为空" in chunks[-1]
-
-
-def test_stream_file_download_failure_surfaces_error(monkeypatch):
-    """A download/decrypt error becomes a readable message, not a crash."""
-    fake = FakeWSClient(downloads=RuntimeError("bad aeskey"))
-
-    async def fail_handle(*a, **k):  # pragma: no cover — must not run
-        yield "should not reach"
-    monkeypatch.setattr(handlers, "handle_media", fail_handle)
-
-    async def gen():
-        async for c in handlers._stream_media(
-            fake, "wecom:u1", media.FILE, "https://x/y", "k", filename="x.docx"
-        ):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-    assert "下载失败" in chunks[-1]
-    assert "bad aeskey" in chunks[-1]
-
-
-def test_video_message_routed_via_catch_all(monkeypatch):
-    """The SDK has no `message.video` event, so video rides the catch-all
-    `message` router. Emitting `message` with a video frame downloads it via
-    the SDK and hands the plaintext bytes to handle_video."""
+def test_video_message_routed_via_catch_all(monkeypatch, tmp_path):
+    """Video has no typed event — it rides the catch-all `message` router, which
+    dispatches to _handle_media(video): download → stage → outbox → ack."""
     from pyee.asyncio import AsyncIOEventEmitter
 
+    monkeypatch.setattr(handlers, "NEXO_STAGING_DIR", str(tmp_path))
+    captured: dict = {}
+    _stub_outbox(monkeypatch, captured)
+
     class EmitterClient(AsyncIOEventEmitter):
-        def __init__(self, downloads=None) -> None:
+        def __init__(self) -> None:
             super().__init__()
             self.stream_calls: list[tuple[str, str, bool]] = []
             self.download_calls: list[tuple[str, str]] = []
-            self.downloads = downloads if downloads is not None else []
 
         async def reply_stream(self, frame, stream_id, content, finish=False, **_):
             self.stream_calls.append((stream_id, content, finish))
@@ -530,139 +466,20 @@ def test_video_message_routed_via_catch_all(monkeypatch):
 
         async def download_file(self, url, aes_key=None):
             self.download_calls.append((url, aes_key))
-            if not self.downloads:
-                raise AssertionError("no fake download queued")
-            return self.downloads.pop(0)
+            return (b"mp4-bytes", "clip.mp4")
 
-    fake = EmitterClient(downloads=[(b"mp4-bytes", "clip.mp4")])
+    fake = EmitterClient()
     handlers.register_handlers(fake)
-
-    captured: dict = {}
-
-    async def fake_handle_media(session_id, route, filename, data):
-        captured.update(session_id=session_id, route=route, filename=filename, data=data)
-        yield "（视频已收到，已保存到对象存储。）"
-
-    monkeypatch.setattr(handlers, "handle_media", fake_handle_media)
-
     frame = _video_frame(url="https://v/c.mp4", aeskey="vid-key=",
-                         chattype="group", chatid="group-1")
+                         chattype="group", chatid="group-1", msgid="mid-vid")
 
     async def _go():
-        # Video has no typed event — emit the generic `message` the SDK always
-        # fires; the catch-all router dispatches it to _handle_video_frame.
         fake.emit("message", frame)
         await asyncio.sleep(0.05)
 
     asyncio.run(_go())
 
-    # Downloaded with the frame's url + aeskey, then handed to handle_media.
     assert fake.download_calls == [("https://v/c.mp4", "vid-key=")]
-    assert captured["data"] == b"mp4-bytes"
-    assert captured["filename"] == "clip.mp4"  # SDK name preferred over default
-    assert captured["session_id"] == "wecom:group-1"
-    assert captured["route"] is media.VIDEO
-    contents = [c for _, c, _ in fake.stream_calls]
-    assert contents, "expected a reply for video messages"
-    assert "视频已收到" in contents[-1]
+    assert Path(captured["staging_path"]).read_bytes() == b"mp4-bytes"
+    assert captured["kind"] == "video"
     assert fake.stream_calls[-1][2] is True
-
-
-def test_stream_video_downloads_and_delegates(monkeypatch):
-    """_stream_media(video): SDK download+decrypt yields plaintext bytes, then
-    hands off to handle_media using the SDK-provided name; falls back to video.mp4."""
-    fake = FakeWSClient()
-    fake.downloads = [(b"mp4-bytes", None)]  # no Content-Disposition name
-
-    captured: dict = {}
-
-    async def fake_handle(session_id, route, filename, data):
-        captured.update(session_id=session_id, route=route, filename=filename, data=data)
-        yield "ok:saved"
-
-    monkeypatch.setattr(handlers, "handle_media", fake_handle)
-
-    async def gen():
-        async for c in handlers._stream_media(fake, "wecom:u1", media.VIDEO, "https://v/c", "k"):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-
-    assert fake.download_calls == [("https://v/c", "k")]
-    assert captured["data"] == b"mp4-bytes"
-    assert captured["filename"] == "video.mp4"  # default when SDK gives no name
-    assert captured["session_id"] == "wecom:u1"
-    assert chunks[0] == "正在接收视频…"
-    assert chunks[-1] == "ok:saved"
-
-
-def test_stream_video_empty_url_yields_error():
-    """No download URL -> a clear user-facing message, no SDK call."""
-    fake = FakeWSClient()
-
-    async def gen():
-        async for c in handlers._stream_media(fake, "wecom:u1", media.VIDEO, "", "k"):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-    assert fake.downloads == []
-    assert "下载链接为空" in chunks[-1]
-
-
-def test_stream_video_download_failure_surfaces_error(monkeypatch):
-    """A download/decrypt error becomes a readable message, not a crash."""
-    fake = FakeWSClient(downloads=RuntimeError("bad aeskey"))
-
-    async def fail_handle(*a, **k):  # pragma: no cover — must not run
-        yield "should not reach"
-    monkeypatch.setattr(handlers, "handle_media", fail_handle)
-
-    async def gen():
-        async for c in handlers._stream_media(fake, "wecom:u1", media.VIDEO, "https://v/c", "k"):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-    assert "下载失败" in chunks[-1]
-    assert "bad aeskey" in chunks[-1]
-
-
-def test_stream_media_retries_transient_download(monkeypatch):
-    """A transient download error (network blip) is retried before surfacing."""
-    from nexo.errors import TransientError, retry as real_retry
-
-    async def fast_retry(factory, **kw):
-        return await real_retry(factory, attempts=kw.get("attempts", 3), base_delay=0)
-
-    monkeypatch.setattr(handlers, "retry", fast_retry)
-
-    async def fake_handle(session_id, route, filename, data):  # download succeeded -> app layer
-        yield "ok"
-
-    monkeypatch.setattr(handlers, "handle_media", fake_handle)
-
-    class FlakyWS:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def download_file(self, url, aes_key=None):
-            self.calls += 1
-            if self.calls < 3:
-                raise TransientError("network blip")
-            return (b"data", "name.bin")
-
-    fake = FlakyWS()
-
-    async def gen():
-        async for c in handlers._stream_media(fake, "wecom:u1", media.FILE, "https://x/y", "k", filename="f.bin"):
-            yield c
-
-    chunks = asyncio.run(_collect(gen()))
-    assert fake.calls == 3  # two transient failures, then success
-    assert chunks[-1] == "ok"
-
-
-async def _collect(gen):
-    out: list[str] = []
-    async for c in gen:
-        out.append(c)
-    return out

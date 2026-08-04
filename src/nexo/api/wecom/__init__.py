@@ -15,10 +15,15 @@ wss://openws.work.weixin.qq.com. This adapter bridges it to the application
 layer, dispatching by WeCom message type (deterministic routing — no router
 agent):
 
-    message.text  ──> app.handle_text   ──> chat_agent (streamed)
-    message.file  ──> _stream_media(file)   ──> app.handle_media ──> remote ship + ack
-    message.image ──> _stream_media(image)  ──> app.handle_media ──> remote ship + ack
-    message (catch-all) ──> video ──> _stream_media(video) ──> app.handle_media ──> remote + ack
+    message.text  ──> app.handle_text  ──> chat_agent (streamed) + outbox
+    message.file  ──> _handle_media(file)   ──> download + stage + outbox + ack
+    message.image ──> _handle_media(image)  ──> download + stage + outbox + ack
+    message (catch-all) ──> video ──> _handle_media(video) ──> download + stage + outbox + ack
+
+The bot is thin: text runs the LLM inline and writes an outbox intent; media is
+downloaded (while the WeCom signed URL is fresh), staged locally, and enqueued
+— then a short ack is sent. `nexo drain` (separate process) uploads media to
+OBS and publishes the rich event to NATS; `nexo archive` records it to MySQL.
 
 The SDK only emits typed events for text/file/image/mixed/voice; other msgtypes
 (video, ...) are dropped at a debug log. A catch-all `message` listener routes

@@ -2,7 +2,9 @@
 
 Usage:
     nexo            # health check
-    nexo bot        # connect the WeCom AI bot and serve
+    nexo bot        # connect the WeCom AI bot, reply + write outbox
+    nexo drain      # read outbox → upload media to OBS + publish rich events
+    nexo archive    # consume JetStream rich events into MySQL (run on the DB host)
     nexo health     # check process liveness via the heartbeat file
 """
 
@@ -18,6 +20,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if argv[0] == "bot":
         return _bot()
+
+    if argv[0] == "drain":
+        return _drain()
+
+    if argv[0] == "archive":
+        return _archive()
 
     if argv[0] == "health":
         return _health()
@@ -42,6 +50,40 @@ def _bot() -> int:
         return 0
     except Exception as exc:  # noqa: BLE001 — print a clean error, not a traceback
         print(f"nexo bot failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _drain() -> int:
+    import asyncio
+
+    from nexo import drain
+    from nexo.observability import configure
+
+    configure()
+    try:
+        asyncio.run(drain.run())
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:  # noqa: BLE001 — print a clean error, not a traceback
+        print(f"nexo drain failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _archive() -> int:
+    import asyncio
+
+    from nexo import archive
+    from nexo.observability import configure
+
+    configure()
+    try:
+        asyncio.run(archive.run())
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:  # noqa: BLE001 — print a clean error, not a traceback
+        print(f"nexo archive failed: {exc}", file=sys.stderr)
         return 1
     return 0
 

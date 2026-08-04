@@ -1,36 +1,40 @@
 """WeCom SDK event wiring + connection lifecycle.
 
-Bridges the aibot WebSocket client to the application layer: dispatches by
-WeCom message type, streams replies back via the streaming protocol, downloads
-+ AES-decrypts media (SDK wire-protocol concerns), and owns connect/disconnect
-plus the liveness heartbeat.
+Bridges the aibot WebSocket client to the application layer. The bot is now a
+THIN process: it replies to the user (text via the inline LLM stream, media via
+a short operator-configurable ack) and writes every message as an "intent" to
+the local outbox. The heavy work — uploading media to OBS and publishing the
+rich event to NATS — is done by the separate `nexo drain` process, so a crash
+anywhere downstream is recoverable from the outbox (no orphan objects).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from aibot import WSClient, WSClientOptions
+from aibot import WSClient, WSClientOptions, generate_req_id
 
-from nexo.app import handle_media, handle_text
+from nexo import outbox
+from nexo.app import handle_text
 from nexo.config import (
     DEBUG_FRAMES,
+    MEDIA_ACK_TEXT,
+    NEXO_ORG_ID,
+    NEXO_STAGING_DIR,
     WECHAT_BOT_ID,
     WECHAT_BOT_SECRET,
     WECOM_REQUEST_TIMEOUT_MS,
 )
 from nexo.errors import retry
-from nexo.media import ROUTES, MediaRoute
 from nexo.observability import flush, start_heartbeat_loop, trace_span, trace_turn
 from nexo.prompts import CHAT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT_VERSION, msg
 
 from nexo.api.wecom.frames import (
     _dump_frame,
-    _filename_from_frame,
     _media_aeskey,
     _media_field,
     _session_id_from_frame,
@@ -78,17 +82,17 @@ def register_handlers(ws_client: WSClient) -> None:
         are skipped here to avoid double-handling (they have their own typed
         listeners above, or are intentionally unhandled).
         """
-        body = frame.get("body", {}) or {}
-        msgtype = body.get("msgtype", "")
-
         if DEBUG_FRAMES:
             await _dump_frame(frame)
+
+        body = frame.get("body", {}) or {}
+        msgtype = body.get("msgtype", "")
 
         if msgtype in {"text", "file", "image", "mixed", "voice"}:
             return  # handled by typed listeners (or intentionally unhandled)
 
         if msgtype == "video":
-            await _handle_video_frame(ws_client, frame)
+            await _handle_media(ws_client, frame, "video")
             return
 
         logger.info("Ignoring unsupported message type: %s", msgtype)
@@ -107,8 +111,6 @@ def register_handlers(ws_client: WSClient) -> None:
             logger.info("WeCom text from %s: %s", session_id, text)
             reply = await _reply_streamed(ws_client, frame, handle_text(session_id, text))
             if root is not None:
-                # Surface the prompt + version and the final reply at the trace
-                # root (the prompt is also captured inside the generation span).
                 root.update(
                     output=reply,
                     metadata={
@@ -116,48 +118,17 @@ def register_handlers(ws_client: WSClient) -> None:
                         "prompt_version": CHAT_SYSTEM_PROMPT_VERSION,
                     },
                 )
+            # Persist the turn as an outbox intent; drain publishes the rich
+            # event (frame + reply_text) to NATS for archive/future subscribers.
+            await outbox.enqueue_text(frame, reply, NEXO_ORG_ID, WECHAT_BOT_ID)
 
     @ws_client.on("message.file")
     async def _on_file(frame: dict[str, Any]) -> None:
-        session_id = _session_id_from_frame(frame)
-        filename = _filename_from_frame(frame)
-        file_url = _media_field(frame, "url", "file")
-        aes_key = _media_aeskey(frame, "file")
-        with trace_turn(
-            "WeCom file processing",
-            session_id=session_id,
-            user_id=_user_id(session_id),
-            tags=["we-com", "file"],
-            input=filename,
-        ):
-            logger.info("WeCom file from %s: %s", session_id, filename)
-            await _reply_streamed(
-                ws_client, frame,
-                _stream_media(ws_client, session_id, ROUTES["file"], file_url, aes_key, filename),
-                accumulate=False,
-            )
+        await _handle_media(ws_client, frame, "file")
 
     @ws_client.on("message.image")
     async def _on_image(frame: dict[str, Any]) -> None:
-        # Images arrive as msgtype=image with image.{url,aeskey} (same encrypted
-        # shape as files). Download via the SDK, ship to the remote folder,
-        # acknowledge — no OCR/vision yet, but storage is the first step toward
-        # multimodal.
-        session_id = _session_id_from_frame(frame)
-        file_url = _media_field(frame, "url", "image")
-        aes_key = _media_aeskey(frame, "image")
-        with trace_turn(
-            "WeCom image processing",
-            session_id=session_id,
-            user_id=_user_id(session_id),
-            tags=["we-com", "image"],
-        ):
-            logger.info("WeCom image from %s", session_id)
-            await _reply_streamed(
-                ws_client, frame,
-                _stream_media(ws_client, session_id, ROUTES["image"], file_url, aes_key),
-                accumulate=False,
-            )
+        await _handle_media(ws_client, frame, "image")
 
     @ws_client.on("event.enter_chat")
     async def _on_enter_chat(frame: dict[str, Any]) -> None:
@@ -166,68 +137,79 @@ def register_handlers(ws_client: WSClient) -> None:
         )
 
 
-async def _stream_media(
-    ws_client: WSClient,
-    session_id: str,
-    route: MediaRoute,
-    file_url: str,
-    aes_key: str,
-    filename: str | None = None,
-) -> AsyncIterator[str]:
-    """Download + decrypt a media payload via the SDK, then delegate to the app layer.
+async def _handle_media(ws_client: WSClient, frame: dict[str, Any], kind: str) -> None:
+    """Download media while the signed URL is fresh, stage it, enqueue, ack.
 
-    Download and AES decryption are SDK wire-protocol concerns, so they live in
-    this transport adapter; the app/storage layer only ever sees plaintext bytes.
-    Everything that varies by media type (progress strings, default filename,
-    the app-layer route) rides on `route`. Yields progress chunks for the bubble.
+    The bot does NOT upload to OBS or publish — `nexo drain` does, from the
+    staged bytes + outbox row. Staging now (URL fresh) decouples from drain
+    availability: even if drain is down for hours, the bytes are on disk and
+    drain uploads them on recovery. The user gets a short configurable ack.
     """
-    if not file_url:
-        yield msg(route.empty_url)
-        return
+    session_id = _session_id_from_frame(frame)
+    with trace_turn(
+        f"WeCom {kind} processing",
+        session_id=session_id,
+        user_id=_user_id(session_id),
+        tags=["we-com", kind],
+    ):
+        logger.info("WeCom %s from %s", session_id, kind)
+        try:
+            file_url = _media_field(frame, "url", kind)
+            aes_key = _media_aeskey(frame, kind)
+            if not file_url:
+                await _reply_ack(ws_client, frame, "[出错] 无下载地址")
+                return
 
-    yield msg(route.downloading)
-    try:
-        # Record only the URL host (not the signed path) to diagnose reachability.
-        host = urlparse(file_url).hostname
-        with trace_span(f"download {route.kind}", input=filename, metadata={"url_host": host}):
             # Download is network I/O over a signed URL — a transient blip is
-            # common, so retry before surfacing a failure to the user.
+            # common, so retry before surfacing a failure to the user. Download
+            # + AES decryption are the SDK's wire-protocol concerns.
+            host = urlparse(file_url).hostname
+
             async def _download():
                 return await ws_client.download_file(file_url, aes_key)
 
-            data, real_name = await retry(_download, attempts=3, base_delay=0.5)
-    except Exception as exc:  # noqa: BLE001 — tell the user, don't hang the bubble
-        yield msg(route.download_failed, error=exc)
-        return
+            with trace_span(f"download {kind}", input=None, metadata={"url_host": host}):
+                data, _ = await retry(_download, attempts=3, base_delay=0.5)
 
-    # Prefer the SDK-provided filename (Content-Disposition); the frame filename
-    # is often just a WeCom-assigned hash. Fall back to the route's default.
-    name = real_name or filename or route.default_name
-    async for chunk in handle_media(session_id, route, name, data):
-        yield chunk
+            staging_path = await _stage_bytes(frame, kind, data)
+            await outbox.enqueue_media(kind, frame, staging_path, NEXO_ORG_ID, WECHAT_BOT_ID)
+            await _reply_ack(ws_client, frame, MEDIA_ACK_TEXT)
+        except Exception as exc:  # noqa: BLE001 — tell the user, don't hang the bubble
+            logger.exception("WeCom %s handling failed", kind)
+            await _reply_ack(ws_client, frame, f"[出错] {exc}")
 
 
-async def _handle_video_frame(ws_client: WSClient, frame: dict[str, Any]) -> None:
-    """Route a `video` frame: download -> remote folder -> acknowledge (mirrors _on_file).
+def _safe_segment(value: str) -> str:
+    """Scrub a string into a path-safe staging filename segment."""
+    return value.replace("/", "_").replace(":", "_").strip() or "unknown"
 
-    Video arrives via the catch-all `message` router (the SDK has no
-    `message.video` typed event), not a dedicated listener.
+
+async def _stage_bytes(frame: dict[str, Any], kind: str, data: bytes) -> str:
+    """Write downloaded media bytes to the staging dir; returns the abs path.
+
+    The filename only needs to be unique and traceable — drain derives the
+    deterministic OBS key from the frame's msg_id, not from this filename.
     """
-    session_id = _session_id_from_frame(frame)
-    file_url = _media_field(frame, "url", "video")
-    aes_key = _media_aeskey(frame, "video")
-    with trace_turn(
-        "WeCom video processing",
-        session_id=session_id,
-        user_id=_user_id(session_id),
-        tags=["we-com", "video"],
-    ):
-        logger.info("WeCom video from %s", session_id)
-        await _reply_streamed(
-            ws_client, frame,
-            _stream_media(ws_client, session_id, ROUTES["video"], file_url, aes_key),
-            accumulate=False,
-        )
+    body = frame.get("body", {}) or {}
+    headers = frame.get("headers", {}) or {}
+    msg_id = str(body.get("msgid") or headers.get("req_id") or "unknown")
+    path = Path(NEXO_STAGING_DIR) / f"{_safe_segment(msg_id)}-{kind}"
+
+    def _do() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    await asyncio.to_thread(_do)
+    return str(path)
+
+
+async def _reply_ack(ws_client: WSClient, frame: dict[str, Any], text: str) -> None:
+    """Send a single finished bubble (the short media ack / error)."""
+    stream_id = generate_req_id("stream")
+    try:
+        await ws_client.reply_stream(frame, stream_id, text, finish=True)
+    except Exception:  # noqa: BLE001 — must not let an ack failure crash the handler
+        logger.exception("Failed to send media ack to WeCom")
 
 
 def build_client() -> WSClient:
@@ -253,6 +235,8 @@ async def run() -> None:
     """Connect to WeCom and serve until interrupted."""
     # Logging + Langfuse tracing are configured by `nexo.observability.configure()`
     # (called from the CLI) — no basicConfig here.
+    await outbox.init()
+    Path(NEXO_STAGING_DIR).mkdir(parents=True, exist_ok=True)
     ws_client = build_client()
     heartbeat = start_heartbeat_loop(lambda: ws_client.is_connected)
     try:

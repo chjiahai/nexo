@@ -1,17 +1,15 @@
 """Media-type route registry.
 
-Each kind of upload the bot accepts (file / image / video) differs only in a
-few details: which remote upload function persists it, the default filename
-when none is known, and the six user-facing message keys. Capturing those
-differences in one `MediaRoute` value lets `app.handle_media` and
-`wecom._stream_media` be written once instead of copied per type — adding a
-new media type is now one route + one upload function + six prompt strings,
-with no new handler code.
+Each kind of media the bot accepts (file / image / video) differs only in a
+few details: which OBS upload function persists it, the default filename when
+none is known, and (legacy) six user-facing message keys. Capturing those
+differences in one `MediaRoute` value lets `nexo.drain._upload_media` be
+written once instead of copied per type — adding a new media type is now one
+route + one upload function, with no new drain code.
 
 The upload function is referenced by attribute name (not captured as a
-callable) so `handle_media` resolves it lazily via `getattr(vfs, ...)`. This
-mirrors the lazy-import style already used in `app.py` and keeps monkeypatching
-`nexo.storage.vfs.<fn>` effective in tests.
+callable) so drain resolves it lazily via `getattr(obs, ...)` on
+`nexo.storage.obs`. (`nexo.storage.vfs` was retired when uploads moved to OBS.)
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ class MediaRoute:
     """Everything that differs between the file / image / video routes."""
 
     kind: str
-    upload_attr: str  # name of the upload function on `nexo.storage.vfs`
+    upload_attr: str  # name of the upload function on `nexo.storage.obs`
     default_name: str | None  # filename when neither SDK nor frame provides one
     # Six user-facing message keys (see prompts.toml [messages]).
     empty_url: str

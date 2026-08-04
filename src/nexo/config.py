@@ -66,9 +66,45 @@ NEXO_ORG_ID = os.getenv("NEXO_ORG_ID", "")
 # download is a direct aiohttp GET that ignores HTTP(S)_PROXY. Raise to 60s.
 WECOM_REQUEST_TIMEOUT_MS = int(os.getenv("WECOM_REQUEST_TIMEOUT_MS", "60000"))
 
-# --- 用户上传落盘（写入 nexo-vfs 分布式文件系统）----------------------------
-# 收到的文件/图片/视频直接流式写入 nexo-vfs 挂载点，不区分类型，统一落到
-# <NEXO_VFS_DIR>/<NEXO_ORG_ID>/<user_id>/ 下。NEXO_ORG_ID 见上方 WeCom 块。
-# NEXO_VFS_DIR 默认 ~/nexo-vfs；Docker 内对应 docker-compose 挂载的
-# /home/app/nexo-vfs。缺失时首次上传会抛清晰报错。
-NEXO_VFS_DIR = os.getenv("NEXO_VFS_DIR", str(Path.home() / "nexo-vfs"))
+# --- 用户上传落盘（华为云 OBS 对象存储）--------------------------------------
+# 收到的文件/图片/视频由 `nexo drain` 进程上传到华为云 OBS 桶。对象 key 为确定性
+# 派生（<org>/<user>/<msg_id>-<name>），保证 drain 崩溃重放时幂等（同 key 同对象）。
+# OBS_ENDPOINT 为区域端点（如 obs.cn-south-1.myhuaweicloud.com），不含 bucket 名。
+# 缺失时 drain 首次上传会抛清晰报错。
+OBS_ACCESS_KEY_ID = os.getenv("OBS_ACCESS_KEY_ID", "")
+OBS_SECRET_ACCESS_KEY = os.getenv("OBS_SECRET_ACCESS_KEY", "")
+OBS_ENDPOINT = os.getenv("OBS_ENDPOINT", "")
+OBS_BUCKET = os.getenv("OBS_BUCKET", "")
+
+# --- 暂存目录 + outbox（bot→drain 的本地持久化交接）--------------------------
+# bot 收到媒体后立即下载（WeCom 签名 URL 新鲜）写入暂存目录，并把"意图"写进
+# SQLite outbox；`nexo drain` 从 outbox 读出暂存路径、上传 OBS、publish 富事件、
+# 删暂存。加固模式：URL 过期前已落盘字节，drain 宕机也不丢媒体。
+NEXO_STAGING_DIR = os.getenv("NEXO_STAGING_DIR", str(DATA_DIR / "staging"))
+NEXO_OUTBOX_PATH = os.getenv("NEXO_OUTBOX_PATH", str(DATA_DIR / "outbox.db"))
+
+# --- media 简短回执文案（运维可配）------------------------------------------
+# upload 离开 bot 后无进度气泡；bot 收到媒体后回这一句。text 仍走内联 LLM 流式。
+MEDIA_ACK_TEXT = os.getenv("NEXO_MEDIA_ACK_TEXT", "已收到，归档中")
+
+# --- NATS JetStream (消息可靠落盘 + 跨机分发) --------------------------------
+# `nexo drain` 把"富事件"（帧 + 回复/obs_key/org/bot_id）发布到 JetStream 流；
+# `nexo archive` 消费者拉取并写入 MySQL。drain 用 js.publish（不走 $JS.API）可连
+# 本地 leaf（127.0.0.1:4222，见 scripts/nats/leaf.conf）；archive 用 pull_subscribe/
+# fetch（走 $JS.API）须直连核心节点——无 JS 的 leaf 不透传 $JS.API。默认值适用
+# bot/drain，archive 主机请改填核心节点（如 nats://10.13.11.7:4222）。
+# NATS_STREAM / NATS_SUBJECT_PREFIX 需与 `nats stream create` 时一致。
+# NATS_ARCHIVE_DURABLE 为 archive 消费者 durable 名。
+NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
+NATS_STREAM = os.getenv("NATS_STREAM", "WECOM_MSG")
+NATS_SUBJECT_PREFIX = os.getenv("NATS_SUBJECT_PREFIX", "nexo.wecom.msg")
+NATS_ARCHIVE_DURABLE = os.getenv("NATS_ARCHIVE_DURABLE", "wxcom_msg_archive")
+
+# --- MySQL (archive 消费者落库) ----------------------------------------------
+# 仅 `nexo archive` 使用（运行在能内网连通云数据库的那台云主机上）。填云厂商
+# MySQL 的内网地址。MYSQL_PASSWORD 留空则不传密码。
+MYSQL_HOST = os.getenv("MYSQL_HOST", "")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "")

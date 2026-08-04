@@ -48,8 +48,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1
 
 # Pre-create the data dir owned by appuser (the bind-mount overlays this).
-# Only `data/.heartbeat` is written here (Docker healthcheck) — uploads land
-# in the nexo-vfs mount, not on local disk.
+# The outbox (data/outbox.db) + media staging (data/staging/) live here, shared
+# between `nexo bot` and `nexo drain`. Media bytes are uploaded to Huawei OBS by
+# drain, not written to local disk.
 RUN mkdir -p /app/data && \
     chown -R appuser:appgroup /app
 
