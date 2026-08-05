@@ -332,8 +332,11 @@ def test_register_handlers_wires_events():
 
 def _stub_outbox(monkeypatch, captured: dict):
     """Replace outbox.enqueue_media with a recorder; avoid touching SQLite."""
-    async def fake_enqueue(kind, frame, staging_path, org_id, bot_id):
-        captured.update(kind=kind, staging_path=staging_path, org_id=org_id, bot_id=bot_id)
+    async def fake_enqueue(kind, frame, staging_path, org_id, bot_id, filename=None):
+        captured.update(
+            kind=kind, staging_path=staging_path, org_id=org_id, bot_id=bot_id,
+            filename=filename,
+        )
         return 1
     monkeypatch.setattr(handlers.outbox, "enqueue_media", fake_enqueue)
 

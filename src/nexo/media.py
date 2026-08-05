@@ -70,3 +70,35 @@ VIDEO = MediaRoute(
 )
 
 ROUTES: dict[str, MediaRoute] = {"file": FILE, "image": IMAGE, "video": VIDEO}
+
+
+# --- file-type sniffing (fallback when no filename is available) ------------
+# WeCom `message.file` frames carry only `url` + `aeskey` — no filename — and
+# the download URL's Content-Disposition is not guaranteed. When the SDK didn't
+# report a name, sniff the type from the downloaded bytes so the OBS object
+# still gets a correct extension + content-type (e.g. an xlsx is recognizable
+# instead of an opaque binary/octet-stream). Images are sniffed separately in
+# `nexo.storage.obs` (they never carry a filename).
+
+def sniff_file_ext(data: bytes) -> str | None:
+    """Best-effort extension from magic bytes. Returns None if unknown."""
+    if data.startswith(b"PK\x03\x04"):
+        # ZIP-based: xlsx/docx/pptx are all zip — tell them apart by members.
+        import io
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                names = z.namelist()
+        except Exception:  # noqa: BLE001 — corrupt/truncated zip → treat as plain zip
+            return "zip"
+        if any(n.startswith("xl/") for n in names):
+            return "xlsx"
+        if any(n.startswith("word/") for n in names):
+            return "docx"
+        if any(n.startswith("ppt/") for n in names):
+            return "pptx"
+        return "zip"
+    if data.startswith(b"%PDF"):
+        return "pdf"
+    return None

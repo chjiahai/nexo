@@ -61,6 +61,7 @@ async def init() -> None:
                   frame         TEXT    NOT NULL,        -- raw frame JSON
                   reply_text    TEXT,                    -- text: LLM final output
                   staging_path  TEXT,                    -- media: abs path to staged bytes
+                  filename      TEXT,                    -- media: original filename (SDK / sniffed)
                   org_id        TEXT,
                   bot_id        TEXT,
                   state         TEXT    NOT NULL DEFAULT 'pending',
@@ -73,6 +74,10 @@ async def init() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(state, id)"
             )
+            # Idempotent migration: older DBs predate the `filename` column.
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(outbox)")}
+            if "filename" not in cols:
+                conn.execute("ALTER TABLE outbox ADD COLUMN filename TEXT")
 
     await asyncio.to_thread(_do)
 
@@ -88,12 +93,13 @@ async def enqueue_text(
 
 
 async def enqueue_media(
-    kind: str, frame: dict[str, Any], staging_path: str, org_id: str, bot_id: str
+    kind: str, frame: dict[str, Any], staging_path: str, org_id: str, bot_id: str,
+    filename: str | None = None,
 ) -> int:
     """Insert a media message intent (state=pending). Returns the row id."""
     return await _enqueue(
         kind=kind, frame=frame, reply_text=None,
-        staging_path=staging_path, org_id=org_id, bot_id=bot_id,
+        staging_path=staging_path, org_id=org_id, bot_id=bot_id, filename=filename,
     )
 
 
@@ -105,6 +111,7 @@ async def _enqueue(
     staging_path: str | None,
     org_id: str,
     bot_id: str,
+    filename: str | None = None,
 ) -> int:
     now = _now()
 
@@ -114,11 +121,11 @@ async def _enqueue(
                 """
                 INSERT INTO outbox
                   (created_at, kind, frame, reply_text, staging_path,
-                   org_id, bot_id, state, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   org_id, bot_id, state, updated_at, filename)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (now, kind, json.dumps(frame, ensure_ascii=False), reply_text,
-                 staging_path, org_id, bot_id, _PENDING, now),
+                 staging_path, org_id, bot_id, _PENDING, now, filename),
             )
             return int(cur.lastrowid)
 
@@ -138,7 +145,7 @@ async def next_pending() -> dict[str, Any] | None:
             row = conn.execute(
                 """
                 SELECT id, kind, frame, reply_text, staging_path,
-                       org_id, bot_id, state, obs_key, error
+                       org_id, bot_id, state, obs_key, error, filename
                 FROM outbox
                 WHERE state IN (?, ?)
                 ORDER BY id

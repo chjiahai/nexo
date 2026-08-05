@@ -30,6 +30,7 @@ from nexo.config import (
     WECOM_REQUEST_TIMEOUT_MS,
 )
 from nexo.errors import retry
+from nexo.media import sniff_file_ext
 from nexo.observability import flush, start_heartbeat_loop, trace_span, trace_turn
 from nexo.prompts import CHAT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT_VERSION, msg
 
@@ -169,10 +170,13 @@ async def _handle_media(ws_client: WSClient, frame: dict[str, Any], kind: str) -
                 return await ws_client.download_file(file_url, aes_key)
 
             with trace_span(f"download {kind}", input=None, metadata={"url_host": host}):
-                data, _ = await retry(_download, attempts=3, base_delay=0.5)
+                data, dl_filename = await retry(_download, attempts=3, base_delay=0.5)
 
             staging_path = await _stage_bytes(frame, kind, data)
-            await outbox.enqueue_media(kind, frame, staging_path, NEXO_ORG_ID, WECHAT_BOT_ID)
+            filename = _resolve_filename(dl_filename, data)
+            await outbox.enqueue_media(
+                kind, frame, staging_path, NEXO_ORG_ID, WECHAT_BOT_ID, filename
+            )
             await _reply_ack(ws_client, frame, MEDIA_ACK_TEXT)
         except Exception as exc:  # noqa: BLE001 — tell the user, don't hang the bubble
             logger.exception("WeCom %s handling failed", kind)
@@ -182,6 +186,20 @@ async def _handle_media(ws_client: WSClient, frame: dict[str, Any], kind: str) -
 def _safe_segment(value: str) -> str:
     """Scrub a string into a path-safe staging filename segment."""
     return value.replace("/", "_").replace(":", "_").strip() or "unknown"
+
+
+def _resolve_filename(dl_filename: str | None, data: bytes) -> str | None:
+    """Pick the filename to persist with the media intent.
+
+    Prefer the SDK-reported name (parsed from the download's
+    Content-Disposition). WeCom `file` frames carry no filename, so when the
+    SDK didn't get one either, sniff the type from the downloaded bytes so the
+    OBS object still gets a correct extension + content-type. None if unknown.
+    """
+    if dl_filename:
+        return dl_filename
+    ext = sniff_file_ext(data)
+    return f"file.{ext}" if ext else None
 
 
 async def _stage_bytes(frame: dict[str, Any], kind: str, data: bytes) -> str:

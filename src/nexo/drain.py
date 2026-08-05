@@ -70,12 +70,15 @@ def _delete_staging(path: str | None) -> None:
         logger.warning("could not delete staging file %s", path, exc_info=True)
 
 
-async def _upload_media(kind: str, frame: dict[str, Any], data: bytes) -> str:
+async def _upload_media(kind: str, row: dict[str, Any], data: bytes) -> str:
     """Upload staged bytes to OBS by media kind; returns the OBS object key."""
+    frame = row["frame"]
     route = ROUTES[kind]
     user_id = _user_id(_session_id_from_frame(frame))
     msg_id = _msg_id(frame)
-    name = _filename_from_frame(frame) if kind == "file" else None
+    # Prefer the filename the bot captured (SDK-reported or sniffed); fall back
+    # to the frame only for older rows that predate the `filename` column.
+    name = (row.get("filename") or _filename_from_frame(frame)) if kind == "file" else None
     with trace_span(f"obs upload {kind}", input=name):
         return await getattr(obs, route.upload_attr)(user_id, msg_id, name, data)
 
@@ -90,6 +93,7 @@ def _build_event(
         "error": error,
         "org_id": row.get("org_id"),
         "bot_id": row.get("bot_id"),
+        "filename": row.get("filename"),
     }
 
 
@@ -107,7 +111,7 @@ async def _process(row: dict[str, Any], publisher: EventPublisher) -> None:
     obs_key = row.get("obs_key")
     if row["state"] == "pending":
         data = await _read_staging(row.get("staging_path"))
-        obs_key = await _upload_media(kind, row["frame"], data)
+        obs_key = await _upload_media(kind, row, data)
         await outbox.mark_uploaded(row["id"], obs_key)
 
     await publisher.publish(_build_event(row, obs_key=obs_key, error=None))

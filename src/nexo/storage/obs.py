@@ -23,6 +23,7 @@ API reference: https://support.huaweicloud.com/sdk-python-devg-obs/obs_22_0500.h
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from pathlib import Path
 
 from nexo.config import (
@@ -31,6 +32,19 @@ from nexo.config import (
     OBS_BUCKET,
     OBS_ENDPOINT,
     OBS_SECRET_ACCESS_KEY,
+)
+
+# Ensure Office XML types map correctly even on slim images whose mime database
+# is incomplete — so an xlsx gets the right content-type (and is recognizable in
+# the OBS console / opens correctly on download) instead of binary/octet-stream.
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"
 )
 
 # Built once, on first use. `None` means "not yet built"; a missing-config
@@ -172,7 +186,12 @@ async def upload_file(user_id: str, msg_id: str, filename: str | None, data: byt
     """Persist a file upload to a deterministic key; returns the OBS object key."""
     name = _safe_name(filename or "unnamed")
     key = _build_key(user_id, msg_id, name)
-    await put_bytes(key, data, metadata={"original-name": filename or "unnamed"})
+    # Infer content-type from the extension so the object is recognizable /
+    # openable (e.g. xlsx → spreadsheet mime) instead of binary/octet-stream.
+    content_type = mimetypes.guess_type(name)[0]
+    await put_bytes(
+        key, data, content_type=content_type, metadata={"original-name": filename or "unnamed"}
+    )
     return key
 
 

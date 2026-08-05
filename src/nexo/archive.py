@@ -117,7 +117,7 @@ def _row_from_event(
         media_url = _media_field(frame, "url", msgtype) or None
         media_aeskey = _media_aeskey(frame, msgtype) or None
         if msgtype == "file":
-            fn = _filename_from_frame(frame)
+            fn = event.get("filename") or _filename_from_frame(frame)
             filename = fn if fn and fn != "unknown-file" else None
 
     req_id = headers.get("req_id")
