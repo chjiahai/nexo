@@ -6,8 +6,11 @@ fields into typed columns (plus the full frame as JSON), and `INSERT IGNORE`s
 the row. The `(nats_stream, nats_seq)` unique key makes this idempotent:
 JetStream redelivery (at-least-once) never produces duplicate rows.
 
-Each message is acked only after the row is committed; on any failure it is
-naked with a backoff so JetStream redelivers it.
+Each message is acked only after the row is committed. Permanent failures
+(malformed payload, or a row that violates the schema) are acked + logged once
+so JetStream stops redelivering — a poison message that naks forever would spam
+the log every few seconds and never recover. Transient failures (connection,
+deadlock, lock wait) are naked with a backoff so JetStream redelivers them.
 
 A rich event is `{frame, reply_text, obs_key, error, org_id, bot_id}` — the
 frame is the raw WeCom frame; the rest is the processing result drain attaches.
@@ -23,6 +26,7 @@ import aiomysql
 import nats
 from nats.aio.client import Client as NatsClient
 from nats.js import JetStreamContext
+from pymysql.err import DataError, IntegrityError, OperationalError
 
 from nexo.api.wecom.frames import (
     _filename_from_frame,
@@ -61,6 +65,30 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
 _BATCH = 16
 _FETCH_TIMEOUT = 5  # seconds; a short timeout lets the loop poll shutdown flags
 _NAK_DELAY = 5  # seconds before JetStream redelivers a failed message
+
+# MySQL error codes that are transient (retryable): the message is fine, the
+# infrastructure isn't (temporarily). Other OperationalErrors are treated as
+# non-transient → still nak (don't drop data on ambiguous operational states
+# like a missing table, which ops can fix without losing in-flight messages).
+_TRANSIENT_MYSQL_CODES = frozenset({
+    1040,           # too many connections
+    1205,           # lock wait timeout
+    1213,           # deadlock
+    1226,           # user limit reached
+    1317,           # query interrupted
+    2002, 2003,     # can't connect to server
+    2006,           # server has gone away
+    2013,           # lost connection during query
+})
+
+# Errors that are the message's fault — the row's data violates the schema
+# deterministically, so redelivery will fail identically. Ack + log once
+# instead of nak-ing forever (a poison message that naks every _NAK_DELAY
+# seconds spams the log with a traceback and never recovers).
+_PERMANENT_MYSQL_ERRORS = (IntegrityError, DataError)
+
+# Bytes of a poison payload to log for post-mortem inspection.
+_POISON_PREVIEW = 200
 
 
 def _row_from_event(
@@ -119,20 +147,67 @@ def _row_from_event(
 
 
 async def _handle(msg: Any, pool: aiomysql.Pool) -> None:
+    meta = msg.metadata
+    nats_stream = meta.stream
+    nats_seq = meta.sequence.stream
+
+    # Phase 1 — parse + extract. A failure here is permanent: the message is
+    # malformed and redelivery will fail identically. Ack + log once (with a
+    # payload preview for diagnosis) so JetStream stops redelivering.
     try:
         event = json.loads(msg.data.decode("utf-8"))
-        meta = msg.metadata
-        nats_stream = meta.stream
-        nats_seq = meta.sequence.stream
         row = _row_from_event(event, nats_stream, nats_seq)
+    except Exception as exc:  # noqa: BLE001 — any parse/extract failure is permanent
+        logger.warning(
+            "Dropping unparseable message (stream=%s seq=%s subject=%s): %s; "
+            "payload=%r",
+            nats_stream, nats_seq, msg.subject, exc, msg.data[:_POISON_PREVIEW],
+        )
+        await msg.ack()
+        return
+
+    # Phase 2 — persist. Transient DB errors (connection/lock/deadlock) → nak
+    # for redelivery. Permanent data errors (row violates schema) → ack + log.
+    # Anything else → nak (conservative: don't drop data on ambiguous or
+    # operational failures like a missing table or a SQL bug — those are
+    # fixable, and the redelivery log surfaces them as a signal to fix them).
+    try:
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(_INSERT_SQL, row)
+    except _PERMANENT_MYSQL_ERRORS as exc:
+        logger.warning(
+            "Dropping message with unrecoverable DB error (stream=%s seq=%s): "
+            "%s; row=%r",
+            nats_stream, nats_seq, exc, row,
+        )
         await msg.ack()
-        logger.debug("Archived %s seq=%s", nats_stream, nats_seq)
-    except Exception:  # noqa: BLE001 — nack so JetStream redelivers
-        logger.exception("Failed to archive message; naking for redelivery")
+        return
+    except OperationalError as exc:
+        code = exc.args[0] if exc.args else None
+        if isinstance(code, int) and code in _TRANSIENT_MYSQL_CODES:
+            logger.info(
+                "Transient DB error (stream=%s seq=%s code=%s); naking for redelivery",
+                nats_stream, nats_seq, code,
+            )
+        else:
+            logger.error(
+                "DB operational error (stream=%s seq=%s code=%s); naking for "
+                "redelivery: %s",
+                nats_stream, nats_seq, code, exc,
+            )
         await msg.nak(delay=_NAK_DELAY)
+        return
+    except Exception:  # noqa: BLE001 — unknown failure; don't drop the message
+        logger.exception(
+            "Unexpected error archiving (stream=%s seq=%s); naking for redelivery",
+            nats_stream, nats_seq,
+        )
+        await msg.nak(delay=_NAK_DELAY)
+        return
+
+    await msg.ack()
+    logger.debug("Archived %s seq=%s", nats_stream, nats_seq)
 
 
 async def run() -> None:
