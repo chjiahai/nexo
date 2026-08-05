@@ -243,8 +243,10 @@ data/.heartbeat
 # Claude Code local settings (agent/tool config, not project source).
 .claude/
 
-# Remote deploy target config (names an internal test host + path).
+# Remote deploy target configs (name internal hosts + paths). One per profile:
+# scripts/deploy.<profile>.env (e.g. deploy.bot.env, deploy.archive.env).
 scripts/deploy.env
+scripts/deploy.*.env
 
 # Vector stores & embeddings indices
 *.faiss
