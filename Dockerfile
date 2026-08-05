@@ -41,10 +41,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ---------- Stage 2: runtime ----------
 FROM python:3.13-slim-bookworm AS runtime
 
+# Optional Debian apt mirror (e.g. mirrors.huaweicloud.com on Huawei Cloud,
+# where deb.debian.org is slow). Empty = use the official Debian repos.
+ARG APT_MIRROR=
 # ca-certificates: required for wss:// TLS to the WeCom endpoint and the
 # OpenAI-compatible HTTPS calls. tini: proper PID-1 signal handling so the
 # asyncio loop receives SIGINT for a clean shutdown.
-RUN apt-get update && \
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|deb.debian.org|$APT_MIRROR|g; s|security.debian.org|$APT_MIRROR|g" \
+        /etc/apt/sources.list.d/debian.sources; \
+    fi && \
+    apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates tini && \
     rm -rf /var/lib/apt/lists/*
 

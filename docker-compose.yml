@@ -77,6 +77,28 @@ services:
     networks:
       - default
 
+  # archive: consumes JetStream rich events from NATS and writes them to MySQL.
+  # pull_subscribe uses the $JS.API, so it must connect to a core NATS node
+  # (not a leaf). No local state — no data volume. Runs on the host with
+  # internal-network access to the cloud MySQL.
+  archive:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexo:0.1.0
+    container_name: nexo-archive
+    command: ["nexo", "archive"]
+    env_file:
+      - .env
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - default
+
 networks:
   default:
     # 固定 nexo 项目默认网络的子网，避免 Docker 自动分配 172.18.0.0/16 劫持
