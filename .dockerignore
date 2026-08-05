@@ -55,10 +55,9 @@ data/
 Dockerfile
 docker-compose.yml
 .dockerignore
+# scripts/ is deploy/host tooling (deploy.sh, publish.sh, nats configs) —
+# never baked into the runtime image.
 scripts/
-# scripts/ is excluded above (keeps deploy.env out of the image), but
-# ship_media.sh is needed at runtime by nexo.storage.remote — re-include it.
-!scripts/ship_media.sh
 
 # --- OS noise ---
 .DS_Store

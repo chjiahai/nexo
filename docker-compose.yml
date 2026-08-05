@@ -51,7 +51,6 @@ services:
         max-file: "3"
     networks:
       - default
-      - langfuse
 
   # drain: reads the outbox the bot wrote, uploads media to OBS, publishes rich
   # events to NATS. Shares ./data for the outbox + staging dir. Run alongside
@@ -86,9 +85,6 @@ networks:
     ipam:
       config:
         - subnet: 10.201.0.0/24
-  langfuse:
-    name: langfuse_default
-    external: true
 
 volumes:
   nats-data:

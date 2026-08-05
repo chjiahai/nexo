@@ -1,17 +1,31 @@
 # syntax=docker/dockerfile:1.7
 
 # ---------- Stage 1: builder ----------
-# Official uv image bundles uv + python 3.13. bookworm-slim matches the
-# runtime base so glibc is compatible between stages.
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+# python:3.13-slim-bookworm matches the runtime base (glibc-compatible). uv is
+# installed via pip: the official uv image lives on ghcr.io, which is slow or
+# unreachable from some deploy hosts; pip lets us use a PyPI mirror instead.
+FROM python:3.13-slim-bookworm AS builder
+
+# PyPI index for both `pip install uv` and `uv sync`. Defaults to PyPI;
+# override via --build-arg on hosts behind a faster mirror (e.g. Tencent CVMs
+# use http://mirrors.tencentyun.com/pypi/simple + UV_TRUSTED_HOST=mirrors.tencentyun.com,
+# passed through docker-compose.override.yml on that host).
+ARG UV_INDEX_URL=https://pypi.org/simple
+ARG UV_TRUSTED_HOST=
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
-    UV_FROZEN=1
+    UV_FROZEN=1 \
+    UV_INDEX_URL=${UV_INDEX_URL} \
+    UV_INSECURE_HOST=${UV_TRUSTED_HOST}
 
 WORKDIR /app
+
+# Install uv from the configured index.
+RUN pip install --no-cache-dir --index-url "${UV_INDEX_URL}" \
+        ${UV_INSECURE_HOST:+--trusted-host "${UV_INSECURE_HOST}"} uv
 
 # Layer-cache: copy lock + manifest first so the deps layer is reused
 # across source-only changes.
@@ -59,9 +73,7 @@ USER appuser
 # Copy source so config.py's Path(__file__).parents[2] == /app holds, making
 # `docker run -v ./.env:/app/.env ...` work without compose.
 # prompts.toml is read at import time by nexo.prompts — must be at /app/prompts.toml.
-# scripts/ holds publish.sh (multi-arch image build helper).
 COPY --chown=appuser:appgroup src/ ./src/
-COPY --chown=appuser:appgroup --chmod=0755 scripts/ ./scripts/
 COPY --chown=appuser:appgroup pyproject.toml README.md prompts.toml ./
 
 ENTRYPOINT ["tini", "--"]

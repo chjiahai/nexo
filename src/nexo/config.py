@@ -80,8 +80,11 @@ OBS_BUCKET = os.getenv("OBS_BUCKET", "")
 # bot 收到媒体后立即下载（WeCom 签名 URL 新鲜）写入暂存目录，并把"意图"写进
 # SQLite outbox；`nexo drain` 从 outbox 读出暂存路径、上传 OBS、publish 富事件、
 # 删暂存。加固模式：URL 过期前已落盘字节，drain 宕机也不丢媒体。
-NEXO_STAGING_DIR = os.getenv("NEXO_STAGING_DIR", str(DATA_DIR / "staging"))
-NEXO_OUTBOX_PATH = os.getenv("NEXO_OUTBOX_PATH", str(DATA_DIR / "outbox.db"))
+# NOTE: `os.getenv(...) or <default>` — an empty value (e.g. `NEXO_OUTBOX_PATH=`
+# in .env) falls back to the default, rather than becoming "" (which sqlite3
+# treats as an in-memory DB, losing all rows on connection close).
+NEXO_STAGING_DIR = os.getenv("NEXO_STAGING_DIR") or str(DATA_DIR / "staging")
+NEXO_OUTBOX_PATH = os.getenv("NEXO_OUTBOX_PATH") or str(DATA_DIR / "outbox.db")
 
 # --- media 简短回执文案（运维可配）------------------------------------------
 # upload 离开 bot 后无进度气泡；bot 收到媒体后回这一句。text 仍走内联 LLM 流式。
