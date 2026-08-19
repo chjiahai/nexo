@@ -6,7 +6,7 @@ Templates for the NATS deployment on the WireGuard mesh (`10.13.11.0/24`).
 
 | File | Where it runs | Role |
 |---|---|---|
-| `core-a.conf` / `core-b.conf` / `core-c.conf` | 3 cloud hosts (10.13.11.7 / .17 / .177) | Core cluster (full mesh) + JetStream (R3 persistence) |
+| `core-a.conf` / `core-b.conf` / `core-c.conf` | 3 cloud hosts (10.13.11.7 / .1 / .177) | Core cluster (full mesh) + JetStream (R3 persistence) |
 | `leaf.conf` | 2 desktops + Macbook | Leaf node — local clients + tunnel to core, no JetStream |
 | `status.sh` | any host on the WG mesh (Macbook/desktop) | Print live cluster state via the core nodes' HTTP monitoring port (8222) |
 
@@ -20,7 +20,7 @@ macOS (Macbook) installs binary + config only — start manually.
 ```bash
 # 3 cloud hosts (run on each, with its own role)
 bash scripts/nats/install.sh core-a    # on 10.13.11.7
-bash scripts/nats/install.sh core-b    # on 10.13.11.17
+bash scripts/nats/install.sh core-b    # on 10.13.11.1
 bash scripts/nats/install.sh core-c    # on 10.13.11.177
 
 # 2 Linux desktops + Macbook
@@ -50,7 +50,7 @@ counts), and `/leafz` (leafnodes connected). Run it from any host on the WG mesh
 ```bash
 bash scripts/nats/status.sh
 # scope to a subset / override the monitoring port:
-CORE_IPS="10.13.11.7 10.13.11.17" PORT=8222 bash scripts/nats/status.sh
+CORE_IPS="10.13.11.7 10.13.11.1" PORT=8222 bash scripts/nats/status.sh
 ```
 
 This is the supported way to inspect topology. `nats server list` / `nats stream

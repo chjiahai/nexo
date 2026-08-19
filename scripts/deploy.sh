@@ -3,7 +3,7 @@
 #
 # profile (default: bot) selects scripts/deploy.<profile>.env, which defines
 # REMOTE_HOST / REMOTE_USER / REMOTE_PATH / SERVICES for that target:
-#   - bot     → 10.13.11.17  (core-b): `nexo bot` + `nexo drain`
+#   - bot     → 10.13.11.1   (core-b, Tencent — SSH port 63208): `nexo bot` + `nexo drain`
 #   - archive → 10.13.11.177 (core-c): `nexo archive`
 #
 # The remotes have no GitHub access, so code is shipped via rsync from the local
@@ -41,13 +41,15 @@ source "${ENV_FILE}"
 : "${SERVICES:?SERVICES not set in ${ENV_FILE} (e.g. \"nexo drain\" or \"archive\")}"
 
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
+# SSH port — defaults to 22; the Tencent core-b host (.1) uses 63208.
+SSH_PORT="${REMOTE_PORT:-22}"
 
-echo "==> profile=${PROFILE}  target=${REMOTE}:${REMOTE_PATH}  services=\"${SERVICES}\""
+echo "==> profile=${PROFILE}  target=${REMOTE}:${SSH_PORT}:${REMOTE_PATH}  services=\"${SERVICES}\""
 
 # 1. Fail fast if SSH key auth isn't set up — don't hang on a password prompt.
-if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "${REMOTE}" true 2>/dev/null; then
-  echo "ERROR: passwordless SSH to ${REMOTE} failed." >&2
-  echo "  Run: ssh-copy-id ${REMOTE}" >&2
+if ! ssh -p "${SSH_PORT}" -o BatchMode=yes -o ConnectTimeout=5 "${REMOTE}" true 2>/dev/null; then
+  echo "ERROR: passwordless SSH to ${REMOTE}:${SSH_PORT} failed." >&2
+  echo "  Run: ssh-copy-id -p ${SSH_PORT} ${REMOTE}" >&2
   exit 1
 fi
 
@@ -77,17 +79,17 @@ rsync -az --delete \
   --exclude='scripts/deploy.env' \
   --exclude='scripts/deploy.*.env' \
   --exclude='docker-compose.override.yml' \
-  -e ssh \
+  -e "ssh -p ${SSH_PORT}" \
   "${REPO_ROOT}/" "${REMOTE}:${REMOTE_PATH}/"
 
 # 4. Warn (don't fail) if .env is missing — compose env_file needs it.
-if ! ssh "${REMOTE}" "test -f ${REMOTE_PATH}/.env"; then
+if ! ssh -p "${SSH_PORT}" "${REMOTE}" "test -f ${REMOTE_PATH}/.env"; then
   echo "WARNING: ${REMOTE_PATH}/.env missing on remote — docker compose will fail to start." >&2
 fi
 
 # 5. Remote: rebuild + restart the profile's services.
 echo "==> docker compose up -d --build ${SERVICES} (rebuilds the nexo image)..."
-ssh "${REMOTE}" bash -lc "'
+ssh -p "${SSH_PORT}" "${REMOTE}" bash -lc "'
   set -e
   cd ${REMOTE_PATH}
   docker compose up -d --build ${SERVICES}
@@ -96,7 +98,7 @@ ssh "${REMOTE}" bash -lc "'
 # 6. Show status + recent logs for the deployed services.
 echo
 echo "==> status:"
-ssh "${REMOTE}" bash -lc "'
+ssh -p "${SSH_PORT}" "${REMOTE}" bash -lc "'
   cd ${REMOTE_PATH}
   docker compose ps
   for svc in ${SERVICES}; do

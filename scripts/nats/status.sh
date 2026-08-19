@@ -8,10 +8,10 @@
 # regardless. See scripts/nats/README.md.
 #
 # Usage: bash scripts/nats/status.sh
-# Optional: CORE_IPS="10.13.11.7 10.13.11.17 10.13.11.177" PORT=8222 bash scripts/nats/status.sh
+# Optional: CORE_IPS="10.13.11.7 10.13.11.1 10.13.11.177" PORT=8222 bash scripts/nats/status.sh
 set -euo pipefail
 
-CORE_IPS="${CORE_IPS:-10.13.11.7 10.13.11.17 10.13.11.177}"
+CORE_IPS="${CORE_IPS:-10.13.11.7 10.13.11.1 10.13.11.177}"
 PORT="${PORT:-8222}"
 
 CORE_IPS="$CORE_IPS" PORT="$PORT" python3 <<'PY'

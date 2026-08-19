@@ -23,6 +23,7 @@
   fi
 
   # create 用全集;update 去掉 storage(不可变)和 replicas(改会触发 resync,已正确无需动)。
+  # 注意:`stream update` 不接受 `--defaults`(那是 create 的 flag),用 `--force` 跳过交互确认。
   CREATE_FLAGS=(
     --subjects="$SUBJECTS" --storage="$STORAGE" --replicas="$REPLICAS"
     --retention="$RETENTION" --max-age="$MAX_AGE" --dupe-window="$DUPE_WINDOW"
@@ -40,7 +41,7 @@
   # 流级 JS API 走默认 account,无需 $SYS 系统权限;连任一 core 节点即可操作整个集群。
   if nats --server="$NATS_URL" stream info "$STREAM" >/dev/null 2>&1; then
     echo "→ 流已存在,执行 update(可变字段)..."
-    nats --server="$NATS_URL" stream update "$STREAM" --defaults "${UPDATE_FLAGS[@]}"
+    nats --server="$NATS_URL" stream update "$STREAM" --force "${UPDATE_FLAGS[@]}"
   else
     echo "→ 流不存在,执行 create..."
     nats --server="$NATS_URL" stream create "$STREAM" --defaults "${CREATE_FLAGS[@]}"
