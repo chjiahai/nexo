@@ -34,7 +34,11 @@ class EventPublisher:
         self._js: JetStreamContext | None = None
 
     async def connect(self) -> None:
-        self._nc = await nats.connect(NATS_URL)
+        # NATS_URL may be a comma-separated list of core nodes for failover;
+        # nats-py takes a list, not a comma string — split here so a single
+        # URL still works unchanged. (Mirrors sync.py.)
+        servers = [u.strip() for u in NATS_URL.split(",") if u.strip()]
+        self._nc = await nats.connect(servers=servers)
         self._js = self._nc.jetstream()
         logger.info("Connected to NATS %s (stream=%s)", NATS_URL, NATS_STREAM)
 

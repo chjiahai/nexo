@@ -228,7 +228,11 @@ async def run() -> None:
         minsize=1,
         maxsize=4,
     )
-    nc: NatsClient = await nats.connect(NATS_URL)
+    # NATS_URL may be a comma-separated list of core nodes for failover;
+    # nats-py takes a list, not a comma string — split here so a single URL
+    # still works unchanged. (Mirrors sync.py.)
+    servers = [u.strip() for u in NATS_URL.split(",") if u.strip()]
+    nc: NatsClient = await nats.connect(servers=servers)
     js: JetStreamContext = nc.jetstream()
     # Binds to (or auto-creates) the durable pull consumer filtering
     # `nexo.wecom.msg.>`; deliver-all + explicit ack.
